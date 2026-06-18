@@ -1,0 +1,1694 @@
+--- src/ImmigrationMVP.jsx	2026-05-25 00:20:17
++++ ImmigrationMVP.jsx	2026-05-24 23:39:23
+@@ -1,4 +1,4 @@
+-import React, { useState, useEffect, useRef } from "react";
++import React, { useState, useEffect } from "react";
+ import { useTranslation } from "react-i18next";
+ import ImageEditorModal from "./ImageEditorModal";
+ import ImageAdjustmentModal from "./ImageAdjustmentModal";
+@@ -8,96 +8,17 @@
+ import { termsOfService } from "./legal/terms";
+ import imageCompression from "browser-image-compression";
+ 
+-const getSimpleActionLabel = (action, t) => {
+-  const keys = {
+-    registration: "registration",
+-    extension: "extension",
+-    address_change: "address",
+-    id_reissue: "idcard",
+-    status_change: "status_change",
+-    status_grant: "status_grant"
+-  };
+-  return t(`appType.${keys[action] || 'unspecified'}`);
+-};
+ 
+-// ── Dynamic Pricing ──────────────────────────────────────────────────────────
+-// Count official forms that will be generated for a package.
+-// Mirrors server-side conditions (server.js: forms 1–6).
+-// Does NOT count: passport/ID/contract scans, preview, service pages.
+-function getOfficialFormCount(pkg) {
+-  // Accept either a saved package or a payload-style object
+-  const p = pkg.payload || pkg;
+-  const vt = p.visaType || pkg.visaType || "";
+-  const act = p.action || pkg.action || "";
+-  const ht = p.housingType || pkg.housingType || "";
+-  const isStudent = p.isStudent === true || (pkg.applicant?.isStudent === true);
+-  const schoolName = (p.schoolName || pkg.applicant?.schoolName || "").trim();
+-  const birthDate = p.birthDate || pkg.applicant?.birthDate || "";
+-
+-  let count = 0;
+-
+-  // 1. 통합신청서 — if visaType !== "F4"
+-  if (vt !== "F4") count++;
+-
+-  // 2. 거주숙소제공사실확인서 — if housingType === "other"
+-  if (ht === "other") count++;
+-
+-  // 3. 외국인 직업 및 연간 소득금액 신고서
+-  //    if action !== "address_change" && isStudent === false && age >= 19 && visaType !== "F1"
+-  if (act !== "address_change" && !isStudent && vt !== "F1") {
+-    let age = 0;
+-    if (birthDate) {
+-      const today = new Date();
+-      const dob = new Date(birthDate);
+-      age = today.getFullYear() - dob.getFullYear();
+-      const m = today.getMonth() - dob.getMonth();
+-      if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) age--;
+-    }
+-    if (age >= 19) count++;
+-  }
+-
+-  // 4. 신원보증서 — if visaType === "F1"
+-  if (vt === "F1") count++;
+-
+-  // 5. 거소신고(신청)서 — if visaType === "F4"
+-  if (vt === "F4") count++;
+-
+-  // 6. 재학사항 신고서 — if isStudent or schoolName present
+-  if (isStudent || schoolName.length > 0) count++;
+-
+-  return Math.max(count, 1); // At least 1 form
+-}
+-
+-// Price tiers based on official form count per package
+-function getPackagePrice(pkg) {
+-  const count = getOfficialFormCount(pkg);
+-  if (count <= 1) return 2990;
+-  if (count === 2) return 3990;
+-  return 4990; // 3+
+-}
+-
+-function getPackageCredits(pkg) {
+-  const count = getOfficialFormCount(pkg);
+-  if (count <= 1) return 3;
+-  if (count === 2) return 4;
+-  return 5;
+-}
+-
+-const PAYMENT_ENABLED = false;
+-
+ export default function ImmigrationMVP() {
+   const { t, i18n } = useTranslation();
+   const [user, setUser] = useState(null);
+-  const userRef = useRef(null);
+   const [authLoading, setAuthLoading] = useState(true);
+   const [draftId, setDraftId] = useState(null);
+   useEffect(() => {
+     fetch("/api/auth/me", {
+       credentials: "include"
+     }).then(res => res.json()).then(data => {
+-      const u = data.user || null;
+-      setUser(u);
+-      userRef.current = u;
++      setUser(data.user || null);
+       setAuthLoading(false);
+     }).catch(() => setAuthLoading(false));
+   }, []);
+@@ -176,6 +97,9 @@
+   const [selectingProvider, setSelectingProvider] = useState(false);
+   const [passportFile, setPassportFile] = useState(null);
+   const [idCardFile, setIdCardFile] = useState(null);
++  const [idCardBackFile, setIdCardBackFile] = useState(null);
++  const [idCardBackPreviewUrl, setIdCardBackPreviewUrl] = useState(null);
++  const [signatureData, setSignatureData] = useState(null);
+   const [contractFile, setContractFile] = useState(null);
+   const [schoolFile, setSchoolFile] = useState(null);
+   const [guarantorFile, setGuarantorFile] = useState(null);
+@@ -224,10 +148,6 @@
+ 
+   // Payment state
+   const [paymentModalOpen, setPaymentModalOpen] = useState(false);
+-  const [paymentCount, setPaymentCount] = useState(1);
+-  const [paymentAmount, setPaymentAmount] = useState(0);
+-  const [cartPromptModalOpen, setCartPromptModalOpen] = useState(false);
+-  const [cartAddedSuccess, setCartAddedSuccess] = useState(false);
+   const [paymentProcessing, setPaymentProcessing] = useState(false);
+ 
+   // Auth Modal state
+@@ -249,15 +169,6 @@
+       docType
+     });
+   }
+-
+-  const [toastMessage, setToastMessage] = useState(null);
+-
+-  useEffect(() => {
+-    if (toastMessage) {
+-      const timer = setTimeout(() => setToastMessage(null), 3000);
+-      return () => clearTimeout(timer);
+-    }
+-  }, [toastMessage]);
+   async function handleEditorSave(data) {
+     if (!editorState) return;
+ 
+@@ -337,6 +248,9 @@
+     setSelectingProvider(false);
+     setPassportFile(null);
+     setIdCardFile(null);
++    setIdCardBackFile(null);
++    setIdCardBackPreviewUrl(null);
++    setSignatureData(null);
+     setContractFile(null);
+     setSchoolFile(null);
+     setGuarantorFile(null);
+@@ -404,7 +318,6 @@
+     try {
+       await fetch("/api/auth/logout", { method: "POST", credentials: "include" });
+       setUser(null);
+-      userRef.current = null;
+       setStep("visa");
+       navigateToStep("visa", true);
+     } catch (err) {
+@@ -462,7 +375,9 @@
+     sex: "",
+     // "M" | "F" — from passport OCR
+     isStudent: null,
+-    schoolName: ""
++    schoolName: "",
++    hikoreaId: "",
++    webmasterMessage: ""
+   });
+   const [guarantor, setGuarantor] = useState({
+     fullName: "",
+@@ -676,6 +591,32 @@
+       setAddressOcrStatus("error");
+     }
+   }
++  function dataURLtoBlob(dataurl) {
++    if (!dataurl) return null;
++    const arr = dataurl.split(',');
++    const mime = arr[0].match(/:(.*?);/)[1];
++    const bstr = atob(arr[1]);
++    let n = bstr.length;
++    const u8arr = new Uint8Array(n);
++    while (n--) {
++      u8arr[n] = bstr.charCodeAt(n);
++    }
++    return new Blob([u8arr], { type: mime });
++  }
++
++  function appendFilesToFormData(formData) {
++    if (passportFile) formData.append("passport", passportFile);
++    if (idCardFile) formData.append("idCard", idCardFile);
++    if (idCardBackFile) formData.append("idCardBack", idCardBackFile);
++    if (contractFile) formData.append("contract", contractFile);
++    if (signatureData) {
++      const signatureBlob = dataURLtoBlob(signatureData);
++      if (signatureBlob) {
++        formData.append("signature", signatureBlob, "signature.jpg");
++      }
++    }
++  }
++
+   function getPayload() {
+     // Mapping relationship for 신원보증서 (Letter of Guarantee)
+     let mappedRelationship = guarantor.relationship;
+@@ -698,10 +639,14 @@
+       address: address || "",
+       phone: applicant.phone || "",
+       isStudent: applicant.isStudent,
++      hikoreaId: applicant.hikoreaId || "",
++      webmasterMessage: applicant.webmasterMessage || "",
+       // Context flags
+       visaType,
+       action,
+       housingType,
++      // Signature (for password recovery)
++      signature: signatureData || "",
+       // Provider (for 거주숙소제공사실확인서)
+       providerFullName: provider.fullName || "",
+       providerIdNumber: provider.idNumber || "",
+@@ -730,9 +675,7 @@
+     try {
+       const formData = new FormData();
+       formData.append("payload", JSON.stringify(getPayload()));
+-      if (passportFile) formData.append("passport", passportFile);
+-      if (idCardFile) formData.append("idCard", idCardFile);
+-      if (contractFile) formData.append("contract", contractFile);
++      appendFilesToFormData(formData);
+ 
+       const res = await fetch("/api/generate/package-preview", {
+         method: "POST",
+@@ -767,30 +710,24 @@
+     }
+   }
+   async function ensureGenerationAccess(actionType) {
+-    const currentUser = userRef.current;
+-    if (!currentUser) {
++    if (!user) {
+       setPendingAction(() => actionType);
+       setAuthModal({ open: true, type: "login", subtitle: t("loginRequiredForDownload") || t("auth.authRequiredForGeneration") });
+       return false;
+     }
+ 
+-    const hasFree = PAYMENT_ENABLED ? (currentUser.freeDownloadsUsed === 0) : false;
+-    const cost = getPackageCredits(getPayload());
+-    const hasPaid = (currentUser.paidGenerationsRemaining || 0) >= cost;
++    const hasFree = user.freeDownloadsUsed === 0;
++    const hasPaid = (user.paidGenerationsRemaining || 0) > 0;
+ 
+     if (hasFree || hasPaid) {
+       return true;
+     }
+ 
+-    if (!PAYMENT_ENABLED) {
+-      setToastMessage(i18n.language === 'ru' ? 'Недостаточно кредитов' : i18n.language === 'ko' ? '크레딧이 부족합니다' : 'Not enough credits');
+-      return false;
+-    }
+-
+     try {
+       const formData = new FormData();
+       formData.append("payload", JSON.stringify(getPayload()));
+       if (draftId) formData.append("draftId", draftId);
++      appendFilesToFormData(formData);
+       
+       const res = await fetch("/api/generate/package-draft", {
+         method: "POST",
+@@ -806,8 +743,7 @@
+     }
+ 
+     setPendingAction(() => actionType);
+-    setPaymentCount(1);
+-    setCartPromptModalOpen(true);
++    setPaymentModalOpen(true);
+     return false;
+   }
+ 
+@@ -824,27 +760,6 @@
+       const data = await res.json();
+       if (data.ok && data.user) {
+         setUser(data.user);
+-        userRef.current = data.user;
+-
+-        // If paying for selected cart items, mark ALL of them as paid on the server.
+-        // Requires the one-time paymentNonce from mock-success — proves payment happened.
+-        // mark-paid is blocked in production; in prod, a real payment webhook does this.
+-        if (selectedCartItems.length > 0 && data.paymentNonce) {
+-          try {
+-            await fetch("/api/user/packages/mark-paid", {
+-              method: "POST",
+-              headers: { "Content-Type": "application/json" },
+-              body: JSON.stringify({
+-                packageIds: selectedCartItems,
+-                paymentNonce: data.paymentNonce   // server validates this against session
+-              }),
+-              credentials: "include"
+-            });
+-          } catch (markErr) {
+-            console.error("mark-paid failed", markErr);
+-          }
+-        }
+-
+         setPaymentModalOpen(false);
+         if (pendingAction) {
+           setTimeout(() => {
+@@ -862,7 +777,7 @@
+   }
+ 
+   async function handleDownloadPDF() {
+-    if (!dataVerified || !termsAccepted || pdfStatus === "loading") return;
++    if (!dataVerified || !termsAccepted) return;
+     const access = await ensureGenerationAccess(handleDownloadPDF);
+     if (!access) return;
+ 
+@@ -872,9 +787,7 @@
+       const payload = { ...getPayload() };
+       const formData = new FormData();
+       formData.append("payload", JSON.stringify(payload));
+-      if (passportFile) formData.append("passport", passportFile);
+-      if (idCardFile) formData.append("idCard", idCardFile);
+-      if (contractFile) formData.append("contract", contractFile);
++      appendFilesToFormData(formData);
+ 
+       const res = await fetch("/api/generate/package-download", {
+         method: "POST",
+@@ -892,10 +805,8 @@
+             return;
+           }
+           if (j.error === "PAYMENT_REQUIRED") {
+-            // Route through CartPromptModal (Pay and download / Add to cart / Cancel)
+             setPendingAction(() => handleDownloadPDF);
+-            setPaymentCount(1);
+-            setCartPromptModalOpen(true);
++            setPaymentModalOpen(true);
+             setPdfStatus("idle");
+             return;
+           }
+@@ -907,28 +818,13 @@
+       }
+ 
+       // Keep frontend state strictly consistent with backend balance consumption
+-      const latestUser = userRef.current;
+-      if (latestUser) {
+-        const isFree = PAYMENT_ENABLED ? (latestUser.freeDownloadsUsed === 0) : false;
+-        const cost = getPackageCredits(payload);
+-        
+-        let remainingCost = cost;
+-        let newFreeUsed = latestUser.freeDownloadsUsed;
+-        
+-        if (isFree && remainingCost > 0) {
+-            newFreeUsed = 1;
+-            remainingCost--;
+-        }
+-        
+-        const newPaid = Math.max(0, (latestUser.paidGenerationsRemaining || 0) - remainingCost);
+-
+-        const updatedUser = {
+-          ...latestUser,
+-          freeDownloadsUsed: newFreeUsed,
+-          paidGenerationsRemaining: newPaid
+-        };
+-        setUser(updatedUser);
+-        userRef.current = updatedUser;
++      if (user) {
++        const isFree = user.freeDownloadsUsed === 0;
++        setUser({
++          ...user,
++          freeDownloadsUsed: isFree ? 1 : user.freeDownloadsUsed,
++          paidGenerationsRemaining: isFree ? (user.paidGenerationsRemaining || 0) : Math.max(0, (user.paidGenerationsRemaining || 0) - 1)
++        });
+       }
+ 
+       const blob = await res.blob();
+@@ -942,19 +838,8 @@
+         URL.revokeObjectURL(url);
+         a.remove();
+       }, 1000);
+-      
+-      setPdfStatus("idle");
++      setPdfStatus("success");
+       setGenerated(true);
+-      
+-      const msg = i18n.language === 'ru' ? "PDF успешно сформирован и скачивается" : i18n.language === 'ko' ? "PDF가 성공적으로 생성되어 다운로드 중입니다" : "PDF generated successfully and is downloading";
+-      setToastMessage(msg);
+-      
+-      fetch("/api/auth/me", { credentials: "include" })
+-        .then(r => r.json())
+-        .then(d => { if(d.ok && d.user) { setUser(d.user); userRef.current = d.user; } });
+-
+-      fetchMyPagePackages();
+-      setView("myPage");
+     } catch (err) {
+       console.error("PDF Download error:", err);
+       setPdfStatus("error");
+@@ -1211,13 +1096,26 @@
+     }, {
+       id: "action",
+       label: t("str_23")
+-    }, {
++    }];
++    if (action === "password_recovery") {
++      config.push({
++        id: "applicant",
++        label: t("str_25")
++      });
++      config.push({
++        id: "generate",
++        label: t("str_29")
++      });
++      return config;
++    }
++    config.push({
+       id: "housing",
+       label: t("str_24")
+-    }, {
++    });
++    config.push({
+       id: "applicant",
+       label: t("str_25")
+-    }];
++    });
+     if (visaType === "F1") {
+       config.push({
+         id: "guarantor",
+@@ -1246,9 +1144,15 @@
+     window.history.back();
+   };
+   const isApplicantValid = () => {
++    if (action === "password_recovery") {
++      const hasBasicInfo = applicant.surname && applicant.givenNames && applicant.nationality && applicant.idNumber && applicant.phone && applicant.birthDate && address;
++      const hasIdCardFiles = idCardFile && idCardBackFile;
++      const hasSignature = !!signatureData;
++      return !!(hasBasicInfo && hasIdCardFiles && hasSignature);
++    }
+     const baseValid = applicant.fullName && applicant.nationality && applicant.passportNumber && applicant.passportIssueDate && applicant.passportExpiryDate && applicant.phone;
+     if (action !== "address_change") {
+-      if (applicant.isStudent === null || applicant.isStudent === undefined) return false;
++      if (applicant.isStudent === null) return false;
+       if (applicant.isStudent && !applicant.schoolName) return false;
+     }
+     return baseValid;
+@@ -1263,16 +1167,9 @@
+     {/* ── Admin Panel (full-screen fixed overlay) ── */}
+     {showAdmin && (
+       <div className="fixed inset-0 z-[500] bg-[#f7f7f5] overflow-y-auto">
+-        <AdminPanel user={user} onBack={() => setShowAdmin(false)} t={t} />
++        <AdminPanel user={user} onBack={() => setShowAdmin(false)} />
+       </div>
+     )}
+-
+-    {toastMessage && (
+-      <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[600] bg-[#2f3437] text-white px-6 py-3 rounded-full shadow-lg font-bold flex items-center gap-2 animate-bounce">
+-        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+-        {toastMessage}
+-      </div>
+-    )}
+     <div className="min-h-screen bg-[#f7f7f5] text-[#2f3437] px-4 py-6 md:py-10 font-sans flex flex-col items-center">
+       {/* ── Top Navigation Bar ── */}
+       <nav className="w-full max-w-3xl mb-4 flex flex-wrap items-center justify-between gap-4 px-2">
+@@ -1406,15 +1303,19 @@
+             </Card>}
+ 
+             {step === "action" && <Card title={t("str_42")} subtitle={t("str_43")}>
+-              <div className="grid md:grid-cols-2 gap-4">
+-                <OptionCard label={t("appType.initial_or_extension")} description={t("str_45")} selected={action === "extension"} onClick={() => {
++              <div className="grid md:grid-cols-3 gap-4">
++                <OptionCard label={t("str_44")} description={t("str_45")} selected={action === "extension"} onClick={() => {
+                   setAction("extension");
+                   navigateToStep("housing");
+                 }} />
+-                <OptionCard label={getSimpleActionLabel("address_change", t)} description={t("str_47")} selected={action === "address_change"} onClick={() => {
++                <OptionCard label={t("str_46")} description={t("str_47")} selected={action === "address_change"} onClick={() => {
+                   setAction("address_change");
+                   navigateToStep("housing");
+                 }} />
++                <OptionCard label={t("action.password_recovery")} description={t("action.password_recovery_desc")} selected={action === "password_recovery"} onClick={() => {
++                  setAction("password_recovery");
++                  navigateToStep("applicant");
++                }} />
+               </div>
+             </Card>}
+ 
+@@ -1433,23 +1334,26 @@
+ 
+             {step === "applicant" && <Card title={t("str_25")} subtitle={t("str_54")}>
+               <div className="grid md:grid-cols-2 gap-4 mb-6">
+-                <UploadBox title={t("str_55")} note={t("str_56")} file={passportFile} ocrStatus={passportOcrStatus} ocrError={passportOcrError} onAdjust={() => openAdjuster(passportFile, blob => {
+-                  const f = new File([blob], passportFile.name, { type: "image/jpeg" });
+-                  setPassportFile(f);
+-                  runPassportOCR(f);
+-                })} onFile={file => {
+-                  openEditor(file, 1.42, t("crop.passportHint"), blob => {
+-                    const f = new File([blob], file.name, {
+-                      type: "image/jpeg"
+-                    });
+-                    setPassportFile(f);
+-                    setPassportOcrStatus("idle");
+-                    setPassportOcrWarning("");
+-                    setOcrFailedFields({});
++                {action !== "password_recovery" && (
++                  <UploadBox title={t("str_55")} note={t("str_56")} file={passportFile} ocrStatus={passportOcrStatus} ocrError={passportOcrError} onAdjust={() => openAdjuster(passportFile, blob => {
++                    const f = new File([blob], passportFile.name, { type: "image/jpeg" });
++                    setPassportFile(f);
+                     runPassportOCR(f);
+-                  }, "passport");
+-                }} />
+-                <UploadBox title={t("str_58")} note={t("str_59")} file={idCardFile} ocrStatus={idCardOcrStatus} ocrError={idCardOcrError} onAdjust={() => openAdjuster(idCardFile, blob => {
++                  })} onFile={file => {
++                    openEditor(file, 1.42, t("crop.passportHint"), blob => {
++                      const f = new File([blob], file.name, {
++                        type: "image/jpeg"
++                      });
++                      setPassportFile(f);
++                      setPassportOcrStatus("idle");
++                      setPassportOcrWarning("");
++                      setOcrFailedFields({});
++                      runPassportOCR(f);
++                    }, "passport");
++                  }} />
++                )}
++                
++                <UploadBox title={action === "password_recovery" ? `${t("str_58")} (${t("str_59")})` : t("str_58")} note={t("str_59")} file={idCardFile} ocrStatus={idCardOcrStatus} ocrError={idCardOcrError} onAdjust={() => openAdjuster(idCardFile, blob => {
+                   const f = new File([blob], idCardFile.name, { type: "image/jpeg" });
+                   setIdCardFile(f);
+                   runIdCardOCR(f);
+@@ -1461,6 +1365,20 @@
+                     handleIdCardUpload(f);
+                   }, "idcard");
+                 }} />
++
++                {action === "password_recovery" && (
++                  <UploadBox title={t("upload.idCardBack")} note={t("upload.idCardBackNote")} file={idCardBackFile} ocrStatus="idle" onAdjust={() => openAdjuster(idCardBackFile, blob => {
++                    const f = new File([blob], idCardBackFile.name, { type: "image/jpeg" });
++                    setIdCardBackFile(f);
++                  })} onFile={file => {
++                    openEditor(file, 1.586, t("upload.idCardBackHint"), blob => {
++                      const f = new File([blob], file.name, {
++                        type: "image/jpeg"
++                      });
++                      setIdCardBackFile(f);
++                    }, "idcard");
++                  }} />
++                )}
+               </div>
+ 
+               {(nameWarning || passportOcrWarning) && <div className="mb-6 space-y-3">
+@@ -1508,40 +1426,46 @@
+                       nationality: false
+                     });
+                   }} required helperText={ocrFailedFields.nationality && !applicant.nationality ? t("str_62") : ""} />
+-                  <Input label={t("str_65")} value={applicant.passportNumber} onChange={v => {
+-                    setApplicant({
+-                      ...applicant,
+-                      passportNumber: v
+-                    });
+-                    if (ocrFailedFields.passportNumber) setOcrFailedFields({
+-                      ...ocrFailedFields,
+-                      passportNumber: false
+-                    });
+-                  }} required helperText={ocrFailedFields.passportNumber && !applicant.passportNumber ? t("str_62") : ""} />
++                  {action !== "password_recovery" && (
++                    <Input label={t("str_65")} value={applicant.passportNumber} onChange={v => {
++                      setApplicant({
++                        ...applicant,
++                        passportNumber: v
++                      });
++                      if (ocrFailedFields.passportNumber) setOcrFailedFields({
++                        ...ocrFailedFields,
++                        passportNumber: false
++                      });
++                    }} required helperText={ocrFailedFields.passportNumber && !applicant.passportNumber ? t("str_62") : ""} />
++                  )}
+                   <Input label={t("str_66")} value={applicant.idNumber} onChange={v => setApplicant({
+                     ...applicant,
+                     idNumber: v
+-                  })} placeholder={t("str_67")} />
+-                  <Input label={t("str_68")} value={applicant.passportIssueDate} onChange={v => {
+-                    setApplicant({
+-                      ...applicant,
+-                      passportIssueDate: v
+-                    });
+-                    if (ocrFailedFields.passportIssueDate) setOcrFailedFields({
+-                      ...ocrFailedFields,
+-                      passportIssueDate: false
+-                    });
+-                  }} placeholder="YYYY-MM-DD" required helperText={ocrFailedFields.passportIssueDate && !applicant.passportIssueDate ? t("str_62") : ""} />
+-                  <Input label={t("str_69")} value={applicant.passportExpiryDate} onChange={v => {
+-                    setApplicant({
+-                      ...applicant,
+-                      passportExpiryDate: v
+-                    });
+-                    if (ocrFailedFields.passportExpiryDate) setOcrFailedFields({
+-                      ...ocrFailedFields,
+-                      passportExpiryDate: false
+-                    });
+-                  }} placeholder="YYYY-MM-DD" required helperText={ocrFailedFields.passportExpiryDate && !applicant.passportExpiryDate ? t("str_62") : ""} />
++                  })} placeholder={t("str_67")} required={action === "password_recovery"} />
++                  {action !== "password_recovery" && (
++                    <>
++                      <Input label={t("str_68")} value={applicant.passportIssueDate} onChange={v => {
++                        setApplicant({
++                          ...applicant,
++                          passportIssueDate: v
++                        });
++                        if (ocrFailedFields.passportIssueDate) setOcrFailedFields({
++                          ...ocrFailedFields,
++                          passportIssueDate: false
++                        });
++                      }} placeholder="YYYY-MM-DD" required helperText={ocrFailedFields.passportIssueDate && !applicant.passportIssueDate ? t("str_62") : ""} />
++                      <Input label={t("str_69")} value={applicant.passportExpiryDate} onChange={v => {
++                        setApplicant({
++                          ...applicant,
++                          passportExpiryDate: v
++                        });
++                        if (ocrFailedFields.passportExpiryDate) setOcrFailedFields({
++                          ...ocrFailedFields,
++                          passportExpiryDate: false
++                        });
++                      }} placeholder="YYYY-MM-DD" required helperText={ocrFailedFields.passportExpiryDate && !applicant.passportExpiryDate ? t("str_62") : ""} />
++                    </>
++                  )}
+                   <Input label={t("str_70")} value={applicant.phone} onChange={v => setApplicant({
+                     ...applicant,
+                     phone: v
+@@ -1556,10 +1480,23 @@
+                       birthDate: false
+                     });
+                   }} placeholder="YYYY-MM-DD" required helperText={ocrFailedFields.birthDate && !applicant.birthDate ? t("str_62") : ""} />
++                  {action === "password_recovery" && (
++                    <>
++                      <Input label={t("applicant.hikoreaId")} value={applicant.hikoreaId} onChange={v => setApplicant({
++                        ...applicant,
++                        hikoreaId: v
++                      })} placeholder="HiKorea ID" />
++                      <Input label={t("nav.address")} value={address} onChange={setAddress} required placeholder={t("str_122")} />
++                      <Input label={t("applicant.webmasterMessage")} value={applicant.webmasterMessage} onChange={v => setApplicant({
++                        ...applicant,
++                        webmasterMessage: v
++                      })} placeholder={t("applicant.webmasterMessage")} />
++                    </>
++                  )}
+                 </FieldGrid>
+               </div>
+ 
+-              {action !== "address_change" && <div className="bg-[#fbfbfa] border border-[#e7e5e2] rounded-[18px] p-6">
++              {action !== "address_change" && action !== "password_recovery" && <div className="bg-[#fbfbfa] border border-[#e7e5e2] rounded-[18px] p-6">
+                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+                   <div>
+                     <h3 className="text-[15px] font-semibold text-[#111111]">{t("str_73")}</h3>
+@@ -1618,8 +1555,14 @@
+                 </div>}
+               </div>}
+ 
+-              <NextButton onClick={() => navigateToStep(visaType === "F1" ? "guarantor" : "address")} disabled={!isApplicantValid()}>
+-                {visaType === "F1" ? t("str_84") : t("str_85")}
++              {action === "password_recovery" && (
++                <div className="bg-[#fbfbfa] border border-[#e7e5e2] rounded-[18px] p-6 mb-6">
++                  <SignaturePad value={signatureData} onChange={setSignatureData} />
++                </div>
++              )}
++
++              <NextButton onClick={() => navigateToStep(action === "password_recovery" ? "generate" : (visaType === "F1" ? "guarantor" : "address"))} disabled={!isApplicantValid()}>
++                {action === "password_recovery" ? t("gen.generate") : (visaType === "F1" ? t("str_84") : t("str_85"))}
+               </NextButton>
+             </Card>}
+ 
+@@ -1739,27 +1682,25 @@
+                     }} className="text-[12px] text-[#e07a7a] hover:text-[#c0504d] font-medium">{t("str_111")}</button>}
+                   </div>
+ 
+-                  <input type="file" id="contractUpload" accept="image/*" className="hidden" onChange={e => {
+-                    const file = e.target.files?.[0];
+-                    if (file) {
+-                      openEditor(file, 1.414, t("crop.contractHint"), blob => {
+-                        const f = new File([blob], file.name, { type: "image/jpeg" });
+-                        setContractFile(f);
+-                        setContractUploaded(true);
+-                        setContractPreviewUrl(URL.createObjectURL(f));
+-                        runContractAddressOCR(f, "manual");
+-                        e.target.value = null;
+-                      }, "contract");
+-                    }
+-                  }} />
+-
+-                  {!contractUploaded ? <div onClick={() => document.getElementById('contractUpload').click()} className="flex flex-col items-center justify-center border-2 border-dashed border-[#d9d7d3] rounded-[20px] p-8 bg-white hover:bg-[#f8f8f6] transition-all cursor-pointer group">
++                  {!contractUploaded ? <label className="flex flex-col items-center justify-center border-2 border-dashed border-[#d9d7d3] rounded-[20px] p-8 bg-white hover:bg-[#f8f8f6] transition-all cursor-pointer group">
++                    <input type="file" accept="image/*" className="hidden" onChange={e => {
++                      const file = e.target.files?.[0];
++                      if (file) {
++                        openEditor(file, 1.414, t("crop.contractHint"), blob => {
++                          const f = new File([blob], file.name, { type: "image/jpeg" });
++                          setContractFile(f);
++                          setContractUploaded(true);
++                          setContractPreviewUrl(URL.createObjectURL(f));
++                          runContractAddressOCR(f, "manual");
++                        }, "contract");
++                      }
++                    }} />
+                     <div className="w-12 h-12 bg-[#f1f1ef] rounded-full flex items-center justify-center mb-3 text-[#787774] group-hover:scale-110 transition-transform">
+                       <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" x2="12" y1="3" y2="15" /></svg>
+                     </div>
+                     <div className="text-[15px] font-semibold text-[#111111] mb-1 text-center">{t("str_112")}</div>
+                     <div className="text-[12px] text-[#787774] text-center leading-relaxed">{t("str_113")}<br />{t("str_114")}</div>
+-                  </div> : <div className="space-y-4">
++                  </label> : <div className="space-y-4">
+                     <div className="relative rounded-[20px] overflow-hidden border border-[#e7e5e2] bg-[#f0f0ee]">
+                       {contractPreviewUrl && <>
+                         <img src={contractPreviewUrl} alt={t("str_115")} onClick={() => {
+@@ -1982,25 +1923,23 @@
+                     <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>{t("str_152")}</> : t("str_153")}
+                 </button>
+ 
+-                {authLoading ? (
+-                  <div className="text-center text-sm text-[#787774] py-2">{t("str_154")}</div>
+-                ) : (
+-                  <button
+-                    onClick={handleDownloadPDF}
+-                    disabled={!dataVerified || !termsAccepted || pdfStatus === "loading"}
+-                    className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-medium text-[15px] shadow-md hover:bg-[#2f2f2f] disabled:opacity-50 disabled:hover:bg-[#111111] transition-colors flex items-center justify-center gap-2"
+-                  >
+-                    {pdfStatus === "loading" && <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}
+-                    {(() => {
+-                      if (pdfStatus === "loading") return t("str_152");
+-                      const cost = getPackageCredits(getPayload());
+-                      const ruCreditWord = cost === 5 ? "кредитов" : "кредита";
+-                      if (i18n.language === 'ru') return `Скачать PDF (-${cost} ${ruCreditWord})`;
+-                      if (i18n.language === 'ko') return `PDF 다운로드 (-${cost} 크레딧)`;
+-                      return `Download PDF (-${cost} credits)`;
+-                    })()}
+-                  </button>
+-                )}
++                {authLoading ? <div className="text-center text-sm text-[#787774] py-2">{t("str_154")}</div> : !user ? <button onClick={() => {
++                  ensureGenerationAccess(handleDownloadPDF);
++                }} disabled={!dataVerified || !termsAccepted || pdfStatus === "loading"} className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-medium text-[15px] shadow-md hover:bg-[#2f2f2f] disabled:opacity-50 disabled:hover:bg-[#111111] transition-colors">{t("str_155")}</button> : user.freeDownloadsUsed === 0 ? <div className="flex flex-col items-stretch gap-2">
++                  <div className="text-center text-[13px] text-green-700 font-medium bg-green-50/80 px-3 py-1.5 rounded-md border border-green-200">{t("str_156")}</div>
++                  <button onClick={() => handleDownloadPDF()} disabled={!dataVerified || !termsAccepted || pdfStatus === "loading"} className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-medium text-[15px] shadow-md hover:bg-[#2f2f2f] disabled:opacity-50 disabled:hover:bg-[#111111] transition-colors flex items-center justify-center gap-2">
++                    {pdfStatus === "loading" && <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}{t("str_157")}</button>
++                </div> : (user.paidGenerationsRemaining || 0) > 0 ? <div className="flex flex-col items-stretch gap-2">
++                  <div className="text-center text-[13px] text-green-700 font-medium bg-green-50/80 px-3 py-1.5 rounded-md border border-green-200">
++                    {(i18n.language === 'ru' ? 'Доступно платных генераций: ' : i18n.language === 'ko' ? '이용 가능한 유료 문서 생성: ' : 'Paid generations available: ') + user.paidGenerationsRemaining}
++                  </div>
++                  <button onClick={() => handleDownloadPDF()} disabled={!dataVerified || !termsAccepted || pdfStatus === "loading"} className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-medium text-[15px] shadow-md hover:bg-[#2f2f2f] disabled:opacity-50 disabled:hover:bg-[#111111] transition-colors flex items-center justify-center gap-2">
++                    {pdfStatus === "loading" && <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}{t("str_159")}</button>
++                </div> : <div className="flex flex-col items-stretch gap-2">
++                  <div className="text-center text-[13px] text-[#8a0000] font-medium bg-[#fff0f0] px-3 py-1.5 rounded-md border border-[#f5c0c0]">{t("str_158")}</div>
++                  <button onClick={() => ensureGenerationAccess(handleDownloadPDF)} disabled={!dataVerified || !termsAccepted || pdfStatus === "loading"} className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-medium text-[15px] shadow-md hover:bg-[#2f2f2f] disabled:opacity-50 disabled:hover:bg-[#111111] transition-colors flex items-center justify-center gap-2">
++                    {pdfStatus === "loading" && <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}{t("str_159")}</button>
++                </div>}
+               </div>
+ 
+ 
+@@ -2049,7 +1988,7 @@
+               </div>
+ 
+               {/* Access Info + Credit Cards */}
+-              {(!PAYMENT_ENABLED || user?.email?.toLowerCase() === ADMIN_EMAIL || user?.role === "b2b" || user?.isB2B) && (() => {
++              {(() => {
+                 const now = new Date();
+                 const permC = user?.permanentCredits ?? user?.paidGenerationsRemaining ?? 0;
+                 const tmpC = user?.temporaryCredits || 0;
+@@ -2069,91 +2008,62 @@
+                       {t('myPage.accessInfo')}
+                     </h3>
+ 
+-                    {/* Free download status (Hidden when PAYMENT_ENABLED is false) */}
+-                    {PAYMENT_ENABLED && (
+-                      <div className="bg-[#f7f7f5] rounded-2xl p-4 border border-[#e7e5e2] flex items-center justify-between">
+-                        <div className="flex items-center gap-3">
+-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center ${user?.freeDownloadsUsed === 0 ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-400"}`}>
+-                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+-                          </div>
+-                          <span className="text-sm font-medium text-[#5f6368]">{label("Бесплатная генерация", "Free generation", "무료 생성")}</span>
++                    {/* Free download status */}
++                    <div className="bg-[#f7f7f5] rounded-2xl p-4 border border-[#e7e5e2] flex items-center justify-between">
++                      <div className="flex items-center gap-3">
++                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${user?.freeDownloadsUsed === 0 ? "bg-green-100 text-green-600" : "bg-gray-100 text-gray-400"}`}>
++                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                         </div>
+-                        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${user?.freeDownloadsUsed === 0 ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
+-                          {user?.freeDownloadsUsed === 0 ? label("Доступна", "Available", "가능") : label("Использована", "Used", "사용됨")}
+-                        </span>
++                        <span className="text-sm font-medium text-[#5f6368]">{label("Бесплатная генерация", "Free generation", "무료 생성")}</span>
+                       </div>
+-                    )}
++                      <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${user?.freeDownloadsUsed === 0 ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>
++                        {user?.freeDownloadsUsed === 0 ? label("Доступна", "Available", "가능") : label("Использована", "Used", "사용됨")}
++                      </span>
++                    </div>
+ 
+-                    {/* Access Info Cards */}
+-                    {user?.role === "b2b" || user?.isB2B || user?.email?.toLowerCase() === ADMIN_EMAIL ? (
+-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+-                        {/* Permanent credits */}
+-                        <div className={`rounded-2xl border p-4 space-y-2 ${permC > 0 ? 'bg-white border-green-200' : 'bg-[#f7f7f5] border-[#e7e5e2]'}`}>
+-                          <div className="flex items-center gap-1.5 text-xs font-bold text-[#5f6368] uppercase tracking-wider">
+-                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+-                            {label("Постоянные", "Permanent", "영구")}
+-                          </div>
+-                          <p className={`text-3xl font-bold ${permC > 0 ? 'text-green-600' : 'text-[#ccc]'}`}>{permC}</p>
+-                          <p className="text-xs text-[#999]">{label("Не истекают", "Never expire", "만료 없음")}</p>
++                    {/* 3-column credit cards */}
++                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
++                      {/* Permanent credits */}
++                      <div className={`rounded-2xl border p-4 space-y-2 ${permC > 0 ? 'bg-white border-green-200' : 'bg-[#f7f7f5] border-[#e7e5e2]'}`}>
++                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#5f6368] uppercase tracking-wider">
++                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
++                          {label("Постоянные", "Permanent", "영구")}
+                         </div>
++                        <p className={`text-3xl font-bold ${permC > 0 ? 'text-green-600' : 'text-[#ccc]'}`}>{permC}</p>
++                        <p className="text-xs text-[#999]">{label("Не истекают", "Never expire", "만료 없음")}</p>
++                      </div>
+ 
+-                        {/* Temporary credits */}
+-                        <div className={`rounded-2xl border p-4 space-y-2 ${isTmpActive ? 'bg-white border-blue-200' : 'bg-[#f7f7f5] border-[#e7e5e2]'}`}>
+-                          <div className="flex items-center gap-1.5 text-xs font-bold text-[#5f6368] uppercase tracking-wider">
+-                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+-                            {label("Временные", "Temporary", "임시")}
+-                          </div>
+-                          <p className={`text-3xl font-bold ${isTmpActive ? 'text-blue-600' : 'text-[#ccc]'}`}>{tmpC}</p>
+-                          {isTmpActive ? (
+-                            <p className="text-xs text-blue-500">{label("До", "Until", "~")} {fmtDate(tmpExpiry)}</p>
+-                          ) : (
+-                            <p className="text-xs text-[#999]">{label("Нет", "None", "없음")}</p>
+-                          )}
++                      {/* Temporary credits */}
++                      <div className={`rounded-2xl border p-4 space-y-2 ${isTmpActive ? 'bg-white border-blue-200' : 'bg-[#f7f7f5] border-[#e7e5e2]'}`}>
++                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#5f6368] uppercase tracking-wider">
++                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
++                          {label("Временные", "Temporary", "임시")}
+                         </div>
+-
+-                        {/* Unlimited */}
+-                        <div className={`rounded-2xl border p-4 space-y-2 ${isUnlimitedActive ? 'bg-white border-purple-200' : 'bg-[#f7f7f5] border-[#e7e5e2]'}`}>
+-                          <div className="flex items-center gap-1.5 text-xs font-bold text-[#5f6368] uppercase tracking-wider">
+-                            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+-                            {label("Безлимит", "Unlimited", "무제한")}
+-                          </div>
+-                          <p className={`text-3xl font-bold ${isUnlimitedActive ? 'text-purple-600' : 'text-[#ccc]'}`}>∞</p>
+-                          {isUnlimitedActive ? (
+-                            <p className="text-xs text-purple-500">{label("До", "Until", "~")} {fmtDate(unlimited)}</p>
+-                          ) : (
+-                            <p className="text-xs text-[#999]">{label("Нет", "None", "없음")}</p>
+-                          )}
+-                        </div>
++                        <p className={`text-3xl font-bold ${isTmpActive ? 'text-blue-600' : 'text-[#ccc]'}`}>{tmpC}</p>
++                        {isTmpActive ? (
++                          <p className="text-xs text-blue-500">{label("До", "Until", "~")} {fmtDate(tmpExpiry)}</p>
++                        ) : (
++                          <p className="text-xs text-[#999]">{label("Нет", "None", "없음")}</p>
++                        )}
+                       </div>
+-                    ) : (
+-                      <div className="space-y-4">
+-                        <div className="bg-white border border-[#e7e5e2] rounded-2xl p-5 shadow-sm flex items-center justify-between">
+-                          <div className="flex items-center gap-3">
+-                            <div className="w-10 h-10 rounded-full bg-[#f7f7f5] text-[#2f3437] flex items-center justify-center">
+-                              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+-                            </div>
+-                            <div>
+-                              <p className="text-sm text-[#5f6368] font-medium">{label("Доступно кредитов", "Credits Available", "사용 가능한 크레딧")}</p>
+-                              <p className="text-2xl font-bold text-[#1a1c1d]">{permC}</p>
+-                            </div>
+-                          </div>
+-                        </div>
+ 
+-                        {/* Pricing explanation */}
+-                        <div className="bg-[#f7f7f5] rounded-2xl p-5 border border-[#e7e5e2] text-sm text-[#5f6368] space-y-2">
+-                          <p className="font-bold text-[#1a1c1d] mb-1">{label("Стоимость генерации:", "Generation Cost:", "생성 비용:")}</p>
+-                          <ul className="list-disc pl-5 space-y-1">
+-                            <li>{label("1 кредит = 1,000 KRW", "1 credit = 1,000 KRW", "1 크레딧 = 1,000 KRW")}</li>
+-                            <li>{label("1 форма = 3 кредита (3,000 KRW)", "1 form = 3 credits (3,000 KRW)", "서식 1장 = 3 크레딧 (3,000 KRW)")}</li>
+-                            <li>{label("2 формы = 4 кредита (4,000 KRW)", "2 forms = 4 credits (4,000 KRW)", "서식 2장 = 4 크레딧 (4,000 KRW)")}</li>
+-                            <li>{label("3 и более форм = 5 кредитов (5,000 KRW)", "3+ forms = 5 credits (5,000 KRW)", "서식 3장 이상 = 5 크레딧 (5,000 KRW)")}</li>
+-                          </ul>
++                      {/* Unlimited */}
++                      <div className={`rounded-2xl border p-4 space-y-2 ${isUnlimitedActive ? 'bg-white border-purple-200' : 'bg-[#f7f7f5] border-[#e7e5e2]'}`}>
++                        <div className="flex items-center gap-1.5 text-xs font-bold text-[#5f6368] uppercase tracking-wider">
++                          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
++                          {label("Безлимит", "Unlimited", "무제한")}
+                         </div>
++                        <p className={`text-3xl font-bold ${isUnlimitedActive ? 'text-purple-600' : 'text-[#ccc]'}`}>∞</p>
++                        {isUnlimitedActive ? (
++                          <p className="text-xs text-purple-500">{label("До", "Until", "~")} {fmtDate(unlimited)}</p>
++                        ) : (
++                          <p className="text-xs text-[#999]">{label("Нет", "None", "없음")}</p>
++                        )}
+                       </div>
+-                    )}
++                    </div>
+ 
+                     {/* No access banner */}
+-                    {!hasAnyAccess && (PAYMENT_ENABLED ? user?.freeDownloadsUsed !== 0 : true) && (
++                    {!hasAnyAccess && user?.freeDownloadsUsed !== 0 && (
+                       <div className="flex items-center gap-3 bg-[#f7f7f5] border border-[#e7e5e2] rounded-2xl p-4">
+                         <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-400 shrink-0">
+                           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+@@ -2205,151 +2115,107 @@
+                                   }}
+                                 />
+                               </div>
+-                                <div className="flex-1 flex flex-col md:flex-row md:items-center justify-between gap-4">
+-                                  <div className="space-y-1">
+-                                    <div className="flex items-center gap-2">
+-                                      <span className="text-xs font-bold uppercase px-2 py-0.5 bg-orange-100 rounded-md text-orange-700">
+-                                        {pkg.visaType}
+-                                      </span>
+-                                      <span className="text-xs text-[#999]">{new Date(pkg.createdAt).toLocaleDateString()}</span>
+-                                      <span className="text-xs font-bold text-[#e15241] border border-[#e15241]/30 px-2 rounded-full">{t('myPage.statusUnpaid') || 'Unpaid'}</span>
+-                                    </div>
+-                                    <h4 className="font-bold text-[#1a1c1d]">
+-                                      {(pkg.applicant?.surname || pkg.applicant?.givenNames) ? `${pkg.applicant?.surname || ''} ${pkg.applicant?.givenNames || ''}`.trim() : (t('appType.unspecified') || 'Not specified')}
+-                                    </h4>
+-                                    <p className="text-sm text-[#5f6368]">
+-                                      {getSimpleActionLabel(pkg.action, t)}
+-                                    </p>
+-                                    {!PAYMENT_ENABLED || user?.role === "b2b" ? (
+-                                      <p className="text-sm font-semibold text-[#1a1c1d] mt-1">
+-                                        {i18n.language === 'ru' ? `Будет списано: ${getPackageCredits(pkg)} кредит(ов)` : i18n.language === 'ko' ? `차감 예정: ${getPackageCredits(pkg)} 크레딧` : `Will use: ${getPackageCredits(pkg)} credits`}
+-                                        <span className="text-xs text-[#999] ml-1">({getOfficialFormCount(pkg)} {getOfficialFormCount(pkg) === 1 ? (i18n.language === 'ru' ? 'форма' : i18n.language === 'ko' ? '서식' : 'form') : (i18n.language === 'ru' ? (getOfficialFormCount(pkg) < 5 ? 'формы' : 'форм') : i18n.language === 'ko' ? '서식' : 'forms')})</span>
+-                                      </p>
+-                                    ) : user?.role === "admin" ? (
+-                                      <p className="text-sm font-semibold text-[#1a1c1d] mt-1">
+-                                        {(pkg.priceKRW || getPackagePrice(pkg)).toLocaleString()} KRW
+-                                        <span className="text-xs text-[#999] ml-1">({getOfficialFormCount(pkg)} forms, {getPackageCredits(pkg)} credits)</span>
+-                                      </p>
+-                                    ) : (
+-                                      <p className="text-sm font-semibold text-[#1a1c1d] mt-1">
+-                                        {(pkg.priceKRW || getPackagePrice(pkg)).toLocaleString()} KRW
+-                                        <span className="text-xs text-[#999] ml-1">({getOfficialFormCount(pkg)} {getOfficialFormCount(pkg) === 1 ? (i18n.language === 'ru' ? 'форма' : i18n.language === 'ko' ? '서식' : 'form') : (i18n.language === 'ru' ? (getOfficialFormCount(pkg) < 5 ? 'формы' : 'форм') : i18n.language === 'ko' ? '서식' : 'forms')})</span>
+-                                      </p>
+-                                    )}
+-                                  </div>
+-                                  <div className="flex flex-col sm:flex-row items-center gap-2">
+-                                    <button 
++                              <div className="flex-1 flex flex-col md:flex-row md:items-center justify-between gap-4">
++                                <div className="space-y-1">
++                                  <div className="flex items-center gap-2">
++                                    <span className="text-xs font-bold uppercase px-2 py-0.5 bg-orange-100 rounded-md text-orange-700">
++                                      {pkg.visaType}
++                                    </span>
++                                    <span className="text-xs text-[#999]">{new Date(pkg.createdAt).toLocaleDateString()}</span>
++                                    <span className="text-xs font-bold text-[#e15241] border border-[#e15241]/30 px-2 rounded-full">{t('myPage.statusUnpaid') || 'Unpaid'}</span>
++                                  </div>
++                                  <h4 className="font-bold text-[#1a1c1d]">
++                                    {pkg.applicant?.surname} {pkg.applicant?.givenNames}
++                                  </h4>
++                                  <p className="text-sm text-[#5f6368]">{pkg.address}</p>
++                                </div>
++                                <div className="flex flex-col sm:flex-row items-center gap-2">
++                                  <button 
++                                    onClick={() => {
++                                      setMyPagePackages(prev => prev.filter(p => p.id !== pkg.id));
++                                      setSelectedCartItems(prev => prev.filter(id => id !== pkg.id));
++                                    }}
++                                    className="px-4 py-2 text-sm font-bold text-[#5f6368] bg-white border border-[#e7e5e2] rounded-full hover:bg-[#f7f7f5] transition-all w-full sm:w-auto"
++                                  >
++                                    {t('myPage.remove') || 'Remove'}
++                                  </button>
++                                  {myPagePackages.filter(p => p.paymentStatus === "unpaid").length === 1 && (
++                                    <button
+                                       onClick={async () => {
+-                                        setPdfStatus("loading");
+-                                        try {
+-                                          const formData = new FormData();
+-                                          formData.append("payload", JSON.stringify(pkg.payload || {}));
+-                                          const res = await fetch("/api/generate/package-preview", {
+-                                            method: "POST",
+-                                            body: formData
+-                                          });
+-                                          if (!res.ok) throw new Error("Preview failed");
+-                                          const blob = await res.blob();
+-                                          const url = URL.createObjectURL(blob);
+-                                          const a = document.createElement("a");
+-                                          a.href = url;
+-                                          a.download = `preview_${pkg.applicant?.surname || 'document'}.pdf`;
+-                                          document.body.appendChild(a);
+-                                          a.click();
+-                                          URL.revokeObjectURL(url);
+-                                          setPdfStatus("success");
+-                                        } catch (err) {
+-                                          console.error(err);
+-                                          setPdfStatus("error");
+-                                        }
+-                                      }}
+-                                      className="px-4 py-2 text-sm font-bold text-[#111111] bg-white border border-[#e7e5e2] rounded-full hover:bg-[#f7f7f5] transition-all w-full sm:w-auto flex items-center justify-center gap-2"
+-                                    >
+-                                      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z" /><circle cx="12" cy="12" r="3" /></svg>
+-                                      {t('cart.preview')}
+-                                    </button>
+-                                    <button 
+-                                      type="button"
+-                                      onClick={async (e) => {
+-                                        e.stopPropagation();
+-                                        setMyPagePackages(prev => prev.filter(p => p.id !== pkg.id));
+-                                        setSelectedCartItems(prev => prev.filter(id => id !== pkg.id));
+-                                        try {
+-                                          const res = await fetch(`/api/user/packages/${pkg.id}`, {
+-                                            method: "DELETE",
+-                                            credentials: "include"
+-                                          });
+-                                          if (!res.ok) {
+-                                            const errData = await res.json();
+-                                            throw new Error(errData.error || "Failed to delete package");
++                                        const performDownload = async () => {
++                                          setPdfStatus("loading");
++                                          try {
++                                            const res = await fetch("/api/generate/package-download", {
++                                              method: "POST",
++                                              headers: { "Content-Type": "application/json" },
++                                              body: JSON.stringify({
++                                                ...pkg.applicant,
++                                                ...pkg.provider,
++                                                ...pkg.guarantor,
++                                                visaType: pkg.visaType,
++                                                action: pkg.action,
++                                                housingType: pkg.housingType,
++                                                address: pkg.address,
++                                                packageId: pkg.id,
++                                                paymentConfirmed: true
++                                              }),
++                                              credentials: "include"
++                                            });
++                                            if (!res.ok) {
++                                              const j = await res.json().catch(() => ({}));
++                                              if (j.error === "LOGIN_REQUIRED" || j.error === "PAYMENT_REQUIRED") {
++                                                setPendingAction(() => performDownload);
++                                                if (j.error === "PAYMENT_REQUIRED") setPaymentModalOpen(true);
++                                                else setAuthModal({ open: true, type: "login", subtitle: t("loginRequiredForDownload") });
++                                                setPdfStatus("idle");
++                                                return;
++                                              }
++                                              throw new Error("Download failed");
++                                            }
++                                            if (user) {
++                                              const hasFree = user.freeDownloadsUsed === 0;
++                                              setUser({
++                                                ...user,
++                                                freeDownloadsUsed: hasFree ? 1 : user.freeDownloadsUsed,
++                                                paidGenerationsRemaining: hasFree ? (user.paidGenerationsRemaining || 0) : Math.max(0, (user.paidGenerationsRemaining || 0) - 1)
++                                              });
++                                            }
++                                            const blob = await res.blob();
++                                            const url = URL.createObjectURL(blob);
++                                            const a = document.createElement("a");
++                                            a.href = url;
++                                            a.download = `application_${pkg.applicant?.surname || 'document'}.pdf`;
++                                            a.click();
++                                            URL.revokeObjectURL(url);
++                                            setPdfStatus("success");
++                                            fetch("/api/user/packages", { credentials: "include" })
++                                              .then(r => r.json())
++                                              .then(d => { if (d.ok) setMyPagePackages(d.packages); });
++                                          } catch (err) {
++                                            console.error(err);
++                                            setPdfStatus("error");
+                                           }
+-                                        } catch (err) {
+-                                          console.error("Error deleting package:", err);
+-                                          const refreshRes = await fetch("/api/user/packages", { credentials: "include" });
+-                                          if (refreshRes.ok) {
+-                                            const data = await refreshRes.json();
+-                                            setMyPagePackages(data.packages || []);
+-                                          }
+-                                        }
++                                        };
++                                        const access = await ensureGenerationAccess(performDownload);
++                                        if (access) performDownload();
+                                       }}
+-                                      className="px-4 py-2 text-sm font-bold text-[#e15241] bg-white border border-[#ffcccc] rounded-full hover:bg-[#fff5f5] transition-all w-full sm:w-auto"
++                                      className="px-6 py-2 text-sm font-bold bg-[#111111] text-white rounded-full hover:bg-[#2f2f2f] transition-all shadow-md w-full sm:w-auto"
+                                     >
+-                                      {t('myPage.remove') || 'Remove'}
++                                      {t('myPage.payButton') || 'Pay'}
+                                     </button>
+-                                  </div>
++                                  )}
+                                 </div>
+-
++                              </div>
+                             </div>
+                           ))}
+                         </div>
+-                        {myPagePackages.filter(p => p.paymentStatus === "unpaid").length > 0 && selectedCartItems.length > 0 && (
+-                          <div className="flex justify-between items-center pt-2 border-t border-[#e7e5e2]">
+-                            <span className="text-sm font-semibold text-[#5f6368]">
+-                              {(() => {
+-                                if (!PAYMENT_ENABLED || user?.role === "b2b") {
+-                                  const totalCredits = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? getPackageCredits(p) : 1);
+-                                  }, 0);
+-                                  return (
+-                                    <>
+-                                      {selectedCartItems.length} {i18n.language === 'ru' ? 'выбрано' : i18n.language === 'ko' ? '개 선택됨' : 'selected'} = <strong className="text-[#1a1c1d]">{totalCredits} {i18n.language === 'ru' ? 'кредит(ов)' : i18n.language === 'ko' ? '크레딧' : 'credits'}</strong>
+-                                    </>
+-                                  );
+-                                } else if (user?.role === "admin") {
+-                                  const total = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? (p.priceKRW || getPackagePrice(p)) : 2990);
+-                                  }, 0);
+-                                  const totalCredits = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? getPackageCredits(p) : 1);
+-                                  }, 0);
+-                                  return (
+-                                    <>
+-                                      {selectedCartItems.length} {i18n.language === 'ru' ? 'выбрано' : i18n.language === 'ko' ? '개 선택됨' : 'selected'} = <strong className="text-[#1a1c1d]">{total.toLocaleString()} KRW ({totalCredits} credits)</strong>
+-                                    </>
+-                                  );
+-                                } else {
+-                                  const total = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? (p.priceKRW || getPackagePrice(p)) : 2990);
+-                                  }, 0);
+-                                  return (
+-                                    <>
+-                                      {selectedCartItems.length} {i18n.language === 'ru' ? 'выбрано' : i18n.language === 'ko' ? '개 선택됨' : 'selected'} = <strong className="text-[#1a1c1d]">{total.toLocaleString()} KRW</strong>
+-                                    </>
+-                                  );
+-                                }
+-                              })()}
+-                            </span>
++                        {myPagePackages.filter(p => p.paymentStatus === "unpaid").length > 1 && (
++                          <div className="flex justify-end pt-2">
+                             <button
+                               disabled={selectedCartItems.length === 0}
+                               onClick={async () => {
+-                                const itemsToDownload = [...selectedCartItems];
+-
+-                                const runDownloads = async () => {
+-                                  for (const id of itemsToDownload) {
++                                const performMultiDownload = async () => {
++                                  for (const id of selectedCartItems) {
+                                     const pkg = myPagePackages.find(p => p.id === id);
+                                     if (!pkg) continue;
+                                     setPdfStatus("loading");
+@@ -2359,55 +2225,45 @@
+                                         headers: { "Content-Type": "application/json" },
+                                         body: JSON.stringify({
+                                           ...pkg.applicant,
+-                                          ...(pkg.provider || {}),
+-                                          ...(pkg.guarantor || {}),
++                                          ...pkg.provider,
++                                          ...pkg.guarantor,
+                                           visaType: pkg.visaType,
+                                           action: pkg.action,
+                                           housingType: pkg.housingType,
+                                           address: pkg.address,
+                                           packageId: pkg.id,
+-                                          isStudent: pkg.applicant?.isStudent !== undefined ? pkg.applicant.isStudent : null,
+-                                          schoolName: pkg.applicant?.schoolName || ''
++                                          paymentConfirmed: true
+                                         }),
+                                         credentials: "include"
+                                       });
+                                       if (!res.ok) {
+                                         const j = await res.json().catch(() => ({}));
+-                                        if (j.error === "PAYMENT_REQUIRED") {
+-                                          if (!PAYMENT_ENABLED) {
+-                                            alert(i18n.language === 'ru' ? 'Недостаточно кредитов' : i18n.language === 'ko' ? '크레딧이 부족합니다' : 'Not enough credits');
+-                                            setPdfStatus("idle");
+-                                            return;
+-                                          }
+-                                          const total = itemsToDownload.reduce((sum, id) => {
+-                                            const p = myPagePackages.find(pp => pp.id === id);
+-                                            return sum + (p ? (p.priceKRW || getPackagePrice(p)) : 2990);
+-                                          }, 0);
+-                                          setPaymentCount(itemsToDownload.length);
+-                                          setPaymentAmount(total);
+-                                          setPendingAction(() => runDownloads);
+-                                          setPaymentModalOpen(true);
++                                        if (j.error === "LOGIN_REQUIRED" || j.error === "PAYMENT_REQUIRED") {
++                                          setPendingAction(() => performMultiDownload);
++                                          if (j.error === "PAYMENT_REQUIRED") setPaymentModalOpen(true);
++                                          else setAuthModal({ open: true, type: "login", subtitle: t("loginRequiredForDownload") });
+                                           setPdfStatus("idle");
+                                           return;
+                                         }
+-                                        if (j.error === "LOGIN_REQUIRED") {
+-                                          setAuthModal({ open: true, type: "login", subtitle: t("loginRequiredForDownload") });
+-                                          setPdfStatus("idle");
+-                                          return;
+-                                        }
+                                         throw new Error("Download failed");
+                                       }
++                                      if (user) {
++                                        const hasFree = user.freeDownloadsUsed === 0;
++                                        setUser({
++                                          ...user,
++                                          freeDownloadsUsed: hasFree ? 1 : user.freeDownloadsUsed,
++                                          paidGenerationsRemaining: hasFree ? (user.paidGenerationsRemaining || 0) : Math.max(0, (user.paidGenerationsRemaining || 0) - 1)
++                                        });
++                                      }
+                                       const blob = await res.blob();
+                                       const url = URL.createObjectURL(blob);
+                                       const a = document.createElement("a");
+                                       a.href = url;
+                                       a.download = `application_${pkg.applicant?.surname || 'document'}.pdf`;
+-                                      document.body.appendChild(a);
+                                       a.click();
+-                                      document.body.removeChild(a);
+                                       URL.revokeObjectURL(url);
+                                     } catch (err) {
+-                                      console.error("Download error for pkg", id, err);
++                                      console.error(err);
+                                     }
+                                   }
+                                   setPdfStatus("success");
+@@ -2415,64 +2271,14 @@
+                                   fetch("/api/user/packages", { credentials: "include" })
+                                     .then(r => r.json())
+                                     .then(d => { if (d.ok) setMyPagePackages(d.packages); });
+-                                  // Refresh user credits
+-                                  fetch("/api/auth/me", { credentials: "include" })
+-                                    .then(r => r.json())
+-                                    .then(d => { if (d.user) { setUser(d.user); userRef.current = d.user; } });
+                                 };
+-
+-                                if (!user) {
+-                                  setAuthModal({ open: true, type: "login", subtitle: t("loginRequiredForDownload") });
+-                                  return;
+-                                }
+-
+-                                // Attempt downloads directly; server returns PAYMENT_REQUIRED
+-                                // if credits insufficient. After payment+mark-paid, retry succeeds.
+-                                await runDownloads();
++                                const access = await ensureGenerationAccess(performMultiDownload);
++                                if (access) performMultiDownload();
+                               }}
+                               className="px-6 py-3 bg-[#111111] text-white rounded-full font-bold shadow-lg hover:bg-[#2f3437] transition-all disabled:opacity-50 flex items-center gap-2"
+                             >
+                               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M11 5.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-1z"/><path d="M2 2.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm0 3a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm0 3a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm3-6a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm0 3a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5zm0 3a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 0 1h-5a.5.5 0 0 1-.5-.5z"/></svg>
+-                              {(() => {
+-                                if (user?.role === "b2b") {
+-                                  const totalCredits = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? getPackageCredits(p) : 1);
+-                                  }, 0);
+-                                  return i18n.language === 'ru'
+-                                    ? `Оплатить выбранные — ${totalCredits} кредит(ов)`
+-                                    : i18n.language === 'ko'
+-                                    ? `선택 항목 결제 — ${totalCredits} 크레딧`
+-                                    : `Pay selected — ${totalCredits} credits`;
+-                                } else if (user?.role === "admin") {
+-                                  const total = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? (p.priceKRW || getPackagePrice(p)) : 2990);
+-                                  }, 0);
+-                                  const totalCredits = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? getPackageCredits(p) : 1);
+-                                  }, 0);
+-                                  return `Pay selected — ${total.toLocaleString()} KRW (${totalCredits} credits)`;
+-                                } else {
+-                                  const total = selectedCartItems.reduce((sum, id) => {
+-                                    const p = myPagePackages.find(pp => pp.id === id);
+-                                    return sum + (p ? (p.priceKRW || getPackagePrice(p)) : 2990);
+-                                  }, 0);
+-                                  if (!PAYMENT_ENABLED) {
+-                                    return i18n.language === 'ru'
+-                                      ? `Сформировать выбранные`
+-                                      : i18n.language === 'ko'
+-                                      ? `선택 항목 생성`
+-                                      : `Generate selected`;
+-                                  }
+-                                  return i18n.language === 'ru'
+-                                    ? `Оплатить выбранные — ${total.toLocaleString()} KRW`
+-                                    : i18n.language === 'ko'
+-                                    ? `선택 항목 결제 — ${total.toLocaleString()} KRW`
+-                                    : `Pay selected — ${total.toLocaleString()} KRW`;
+-                                }
+-                              })()}
++                              {t('myPage.paySelected') || 'Pay selected'} ({selectedCartItems.length})
+                             </button>
+                           </div>
+                         )}
+@@ -2481,25 +2287,22 @@
+ 
+                     {myPagePackages.some(p => p.paymentStatus !== "unpaid") && (
+                       <div className="space-y-4">
+-                        <h4 className="font-bold text-[#5f6368]">{i18n.language === 'ru' ? 'Мои заказы' : i18n.language === 'ko' ? '내 주문' : 'My orders'}</h4>
++                        <h4 className="font-bold text-[#5f6368]">{t('myPage.paidApplications') || 'Оплаченные заявления'}</h4>
+                         <div className="grid gap-4">
+                           {myPagePackages.filter(p => p.paymentStatus !== "unpaid").map(pkg => (
+-                            <div key={pkg.id} className="bg-white border border-[#e7e5e2] rounded-2xl p-5 hover:border-[#2f3437] transition-all group flex gap-3">
+-                              <div className="flex-1 flex flex-col md:flex-row md:items-center justify-between gap-4">
++                            <div key={pkg.id} className="bg-white border border-[#e7e5e2] rounded-2xl p-5 hover:border-[#2f3437] transition-all group">
++                              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                                 <div className="space-y-1">
+                                   <div className="flex items-center gap-2">
+                                     <span className="text-xs font-bold uppercase px-2 py-0.5 bg-[#f7f7f5] rounded-md text-[#5f6368]">
+                                       {pkg.visaType}
+                                     </span>
+                                     <span className="text-xs text-[#999]">{new Date(pkg.createdAt).toLocaleDateString()}</span>
+-                                    <span className="text-xs font-bold text-[#1a7a3a] border border-[#1a7a3a]/30 px-2 rounded-full">{i18n.language === 'ru' ? 'Оплачено' : i18n.language === 'ko' ? '결제완료' : 'Paid'}</span>
+                                   </div>
+                                   <h4 className="font-bold text-[#1a1c1d]">
+-                                    {(pkg.applicant?.surname || pkg.applicant?.givenNames) ? `${pkg.applicant?.surname || ''} ${pkg.applicant?.givenNames || ''}`.trim() : (t('appType.unspecified') || 'Not specified')}
++                                    {pkg.applicant?.surname} {pkg.applicant?.givenNames}
+                                   </h4>
+-                                  <p className="text-sm text-[#5f6368]">
+-                                    {getSimpleActionLabel(pkg.action, t)}
+-                                  </p>
++                                  <p className="text-sm text-[#5f6368]">{pkg.address}</p>
+                                 </div>
+                                 <div className="flex items-center gap-2">
+                                   <button className="px-4 py-2 text-sm font-bold border border-[#e7e5e2] rounded-full hover:bg-[#f7f7f5] transition-all">
+@@ -2522,9 +2325,7 @@
+                                               housingType: pkg.housingType,
+                                               address: pkg.address,
+                                               packageId: pkg.id,
+-                                              paymentConfirmed: true,
+-                                              isStudent: pkg.applicant?.isStudent !== undefined ? pkg.applicant.isStudent : null,
+-                                              schoolName: pkg.applicant?.schoolName || ''
++                                              paymentConfirmed: true
+                                             }),
+                                             credentials: "include"
+                                           });
+@@ -2532,15 +2333,7 @@
+                                             const j = await res.json().catch(() => ({}));
+                                             if (j.error === "LOGIN_REQUIRED" || j.error === "PAYMENT_REQUIRED") {
+                                               setPendingAction(() => performDownload);
+-                                              if (j.error === "PAYMENT_REQUIRED") {
+-                                                if (!PAYMENT_ENABLED) {
+-                                                  alert(i18n.language === 'ru' ? 'Недостаточно кредитов' : i18n.language === 'ko' ? '크레딧이 부족합니다' : 'Not enough credits');
+-                                                } else {
+-                                                  setPaymentCount(1);
+-                                                  setPaymentAmount(pkg.priceKRW || getPackagePrice(pkg));
+-                                                  setPaymentModalOpen(true);
+-                                                }
+-                                              }
++                                              if (j.error === "PAYMENT_REQUIRED") setPaymentModalOpen(true);
+                                               else setAuthModal({ open: true, type: "login", subtitle: t("loginRequiredForDownload") });
+                                               setPdfStatus("idle");
+                                               return;
+@@ -2591,7 +2384,6 @@
+             </section>
+           </main>
+         )}
+-
+       </div>
+ 
+       {/* ── Reset Confirmation Modal ── */}
+@@ -2665,129 +2457,10 @@
+           </div>
+         </div>
+       )}
+-
+-
+-      {/* ── Cart Prompt Modal ── */}
+-      {cartPromptModalOpen && (
+-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-4 md:p-8 animate-in fade-in duration-300">
+-          <div className="bg-white rounded-[24px] max-w-sm w-full shadow-2xl animate-in zoom-in-95 duration-300 overflow-hidden flex flex-col p-6 text-center space-y-6">
+-            <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto text-blue-500 mb-2">
+-              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2 3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4Z"/><path d="M3 6h18"/><path d="M16 10a4 4 0 0 1-8 0"/></svg>
+-            </div>
+-            
+-            {cartAddedSuccess ? (
+-              <>
+-                <div>
+-                  <h3 className="text-xl font-bold text-[#1a1c1d] mb-2">{i18n.language === 'ru' ? 'Заявление добавлено в корзину' : i18n.language === 'ko' ? '신청서가 장바구니에 추가되었습니다' : 'Application added to cart'}</h3>
+-                </div>
+-                <div className="flex flex-col gap-3">
+-                  <button
+-                    onClick={() => {
+-                      setCartPromptModalOpen(false);
+-                      setCartAddedSuccess(false);
+-                      navigateToStep("my-page");
+-                    }}
+-                    className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-bold shadow-md hover:bg-[#2f2f2f] transition-colors"
+-                  >
+-                    {i18n.language === 'ru' ? 'Перейти в корзину' : i18n.language === 'ko' ? '장바구니 이동' : 'Go to cart'}
+-                  </button>
+-                  <button
+-                    onClick={() => {
+-                      setCartPromptModalOpen(false);
+-                      setCartAddedSuccess(false);
+-                    }}
+-                    className="w-full py-3.5 bg-white border-2 border-[#111111] text-[#111111] rounded-[10px] font-bold hover:bg-[#f7f7f5] transition-colors"
+-                  >
+-                    {i18n.language === 'ru' ? 'Продолжить редактирование' : i18n.language === 'ko' ? '계속 수정' : 'Continue editing'}
+-                  </button>
+-                </div>
+-              </>
+-            ) : (
+-              <>
+-                <div>
+-                  <h3 className="text-xl font-bold text-[#1a1c1d] mb-2">{t('cartPrompt.title') || 'Payment Required'}</h3>
+-                  <p className="text-[#5f6368] text-sm">
+-                    {(() => {
+-                      const currentPrice = getPackagePrice({ visaType, action, housingType, isStudent: applicant.isStudent, birthDate: applicant.birthDate, schoolName: applicant.schoolName });
+-                      const formCount = getOfficialFormCount({ visaType, action, housingType, isStudent: applicant.isStudent, birthDate: applicant.birthDate, schoolName: applicant.schoolName });
+-                      return i18n.language === 'ru'
+-                        ? `Стоимость: ${currentPrice.toLocaleString()} KRW (${formCount} ${formCount === 1 ? 'форма' : formCount < 5 ? 'формы' : 'форм'})`
+-                        : i18n.language === 'ko'
+-                        ? `비용: ${currentPrice.toLocaleString()} KRW (${formCount}개 서식)`
+-                        : `Cost: ${currentPrice.toLocaleString()} KRW (${formCount} ${formCount === 1 ? 'form' : 'forms'})`;
+-                    })()}
+-                  </p>
+-                </div>
+ 
+-                <div className="flex flex-col gap-3">
+-                  {PAYMENT_ENABLED && (
+-                    <button
+-                      onClick={() => {
+-                        setCartPromptModalOpen(false);
+-                        setPaymentCount(1);
+-                        setPaymentAmount(getPackagePrice({ visaType, action, housingType, isStudent: applicant.isStudent, birthDate: applicant.birthDate, schoolName: applicant.schoolName }));
+-                        setPaymentModalOpen(true);
+-                      }}
+-                      className="w-full py-3.5 bg-[#111111] text-white rounded-[10px] font-bold shadow-md hover:bg-[#2f2f2f] transition-colors"
+-                    >
+-                      {t('cartPrompt.payAndDownload') || 'Pay and download'}
+-                    </button>
+-                  )}
+-                  <button
+-                    onClick={async () => {
+-                      try {
+-                        const formData = new FormData();
+-                        formData.append("payload", JSON.stringify(getPayload()));
+-                        if (draftId) formData.append("draftId", draftId);
+ 
+-                        const res = await fetch("/api/generate/package-draft", {
+-                          method: "POST",
+-                          body: formData,
+-                          credentials: "include"
+-                        });
+-
+-                        if (!res.ok) {
+-                          const errData = await res.json().catch(() => ({}));
+-                          throw new Error(errData.error || `Server error ${res.status}`);
+-                        }
+-
+-                        const data = await res.json();
+-                        if (data.draftId) setDraftId(data.draftId);
+-
+-                        // Refresh packages list
+-                        fetch("/api/user/packages", { credentials: "include" })
+-                          .then(r => r.json())
+-                          .then(d => { if (d.ok) setMyPagePackages(d.packages); });
+-
+-                        setCartAddedSuccess(true);
+-                      } catch (err) {
+-                        console.error("Add to cart failed:", err);
+-                        alert(
+-                          i18n.language === 'ru' ? 'Не удалось добавить в корзину. Попробуйте ещё раз.' :
+-                          i18n.language === 'ko' ? '장바구니에 추가하지 못했습니다. 다시 시도해 주세요.' :
+-                          'Failed to add to cart. Please try again.'
+-                        );
+-                      }
+-                    }}
+-                    className="w-full py-3.5 bg-white border-2 border-[#111111] text-[#111111] rounded-[10px] font-bold hover:bg-[#f7f7f5] transition-colors"
+-                  >
+-                    {t('cartPrompt.addToCart') || 'Add to cart'}
+-                  </button>
+-                  <button
+-                    onClick={() => setCartPromptModalOpen(false)}
+-                    className="w-full py-3 text-sm font-bold text-[#5f6368] hover:text-[#111111] transition-colors"
+-                  >
+-                    {t('cartPrompt.cancel') || 'Cancel'}
+-                  </button>
+-                </div>
+-              </>
+-            )}
+-          </div>
+-        </div>
+-      )}
+-
+       {/* ── Simulated Payment Modal ── */}
+-      {PAYMENT_ENABLED && paymentModalOpen && (
++      {paymentModalOpen && (
+         <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-4 md:p-8 animate-in fade-in duration-300">
+           <div className="bg-white rounded-[24px] max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-300 overflow-hidden flex flex-col">
+             <div className="px-6 py-5 border-b border-[#e7e5e2] flex items-center justify-between shrink-0">
+@@ -2812,7 +2485,7 @@
+               </div>
+               <div>
+                 <p className="text-base font-medium text-[#1a1c1d]">{t('paymentDescription') || t('pay.desc')}</p>
+-                <p className="text-2xl font-bold text-[#111111] mt-3 tracking-tight">{paymentAmount.toLocaleString()} KRW</p>
++                <p className="text-2xl font-bold text-[#111111] mt-3 tracking-tight">{t('oneGenerationPrice') || t('pay.cost')}</p>
+                 <div className="mt-2 text-xs text-[#787774] bg-[#f7f7f5] py-1 px-2.5 rounded-md inline-block border border-[#e7e5e2]">
+                   🔒 {i18n.language === 'ru' ? 'Безопасный платёж' : i18n.language === 'ko' ? '안전한 결제' : 'Secure Checkout'}
+                 </div>
+@@ -2855,40 +2528,15 @@
+           setAuthModal({ open: false, type: "", subtitle: "" });
+           setPendingAction(null);
+         }}
+-        onSuccess={async (userData) => {
+-          // Immediately set user from login response so UI updates
++        onSuccess={(userData) => {
+           setUser(userData);
+-          userRef.current = userData;
+           setAuthModal({ open: false, type: "", subtitle: "" });
+-
+           if (pendingAction) {
+-            const action = pendingAction;
++            pendingAction(userData);
+             setPendingAction(null);
+-
+-            // Re-fetch canonical user data from server before running
+-            // the pending action — ensures access/payment state is accurate
+-            // and not stale from the login response snapshot.
+-            try {
+-              const meRes = await fetch("/api/auth/me", { credentials: "include" });
+-              const meData = await meRes.json();
+-              if (meData.user) {
+-                setUser(meData.user);
+-                userRef.current = meData.user;
+-              }
+-            } catch (e) {
+-              // If /api/auth/me fails, proceed with the login response data
+-            }
+-
+-            // Run pending action after state is updated with canonical data
+-            setTimeout(() => action(), 0);
+-          }
+-          // If user is mid-application flow, stay on the current step.
+-          // All state (visa, action, form data, OCR, files) is preserved in memory.
+-          // Only navigate to my-page if user logged in from visa selection (home).
+-          else if (step === "visa") {
++          } else {
+             navigateToStep("my-page");
+           }
+-          // Otherwise: do nothing — stay on current step with all data intact.
+         }}
+       />
+ 
+@@ -2903,21 +2551,6 @@
+         }
+         .btn-primary:hover:not(:disabled) { opacity: .9; transform: translateY(-1px); }
+       `}</style>
+-
+-      {/* ── Pricing Section ── */}
+-      {PAYMENT_ENABLED && (
+-        <section id="pricing-section" className="w-full max-w-3xl bg-white border border-[#e7e5e2] rounded-[24px] p-6 md:p-10 shadow-sm mt-12 animate-in fade-in duration-300">
+-          <h2 className="text-xl font-bold tracking-[-0.03em] text-[#111111] mb-6">
+-            {t('pricing.title')}
+-          </h2>
+-          <div className="space-y-3.5 text-[#37352f] text-[15px] font-normal leading-relaxed">
+-            <p>{t('pricing.tier1')} - <span className="font-semibold text-[#111111]">2,990 KRW</span></p>
+-            <p>{t('pricing.tier2')} - <span className="font-semibold text-[#111111]">3,990 KRW</span></p>
+-            <p>{t('pricing.tier3')} - <span className="font-semibold text-[#111111]">4,990 KRW</span></p>
+-          </div>
+-        </section>
+-      )}
+-
+       <footer className="w-full max-w-3xl mt-12 mb-8 text-center text-xs text-[#9b9a97] space-y-3">
+         <div className="flex justify-center gap-4 text-[#787774]">
+           <button onClick={() => setLegalModal({ open: true, type: "privacy" })} className="hover:text-[#111111] transition underline underline-offset-2">{t('footer.privacyPolicy')}</button>
+@@ -3530,7 +3163,144 @@
+       })} className="px-4 py-2.5 text-[13px] font-medium text-[#787774] border border-[#d9d7d3] bg-white rounded-xl hover:bg-[#f1f1ef] transition-colors">{t("str_175")}</button>
+     </div>
+   </div>;
++function SignaturePad({ value, onChange }) {
++  const { t } = useTranslation();
++  const canvasRef = React.useRef(null);
++  const [isDrawing, setIsDrawing] = useState(false);
++
++  const getCanvasContext = () => {
++    const canvas = canvasRef.current;
++    if (!canvas) return null;
++    const ctx = canvas.getContext("2d");
++    if (!ctx) return null;
++    ctx.strokeStyle = "#111111";
++    ctx.lineWidth = 3;
++    ctx.lineCap = "round";
++    ctx.lineJoin = "round";
++    return ctx;
++  };
++
++  useEffect(() => {
++    const canvas = canvasRef.current;
++    if (!canvas) return;
++
++    canvas.width = 600;
++    canvas.height = 240;
++
++    const ctx = getCanvasContext();
++    if (!ctx) return;
++
++    ctx.fillStyle = "#ffffff";
++    ctx.fillRect(0, 0, canvas.width, canvas.height);
++
++    if (value) {
++      const img = new Image();
++      img.src = value;
++      img.onload = () => {
++        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
++      };
++    }
++  }, [value]);
++
++  const getCoordinates = (e) => {
++    const canvas = canvasRef.current;
++    if (!canvas) return { x: 0, y: 0 };
++    const rect = canvas.getBoundingClientRect();
++    
++    let clientX, clientY;
++    if (e.touches && e.touches.length > 0) {
++      clientX = e.touches[0].clientX;
++      clientY = e.touches[0].clientY;
++    } else {
++      clientX = e.clientX;
++      clientY = e.clientY;
++    }
++
++    const x = (clientX - rect.left) * (canvas.width / rect.width);
++    const y = (clientY - rect.top) * (canvas.height / rect.height);
++    return { x, y };
++  };
++
++  const startDrawing = (e) => {
++    e.preventDefault();
++    const ctx = getCanvasContext();
++    if (!ctx) return;
++    const { x, y } = getCoordinates(e);
++    ctx.beginPath();
++    ctx.moveTo(x, y);
++    setIsDrawing(true);
++  };
++
++  const draw = (e) => {
++    if (!isDrawing) return;
++    e.preventDefault();
++    const ctx = getCanvasContext();
++    if (!ctx) return;
++    const { x, y } = getCoordinates(e);
++    ctx.lineTo(x, y);
++    ctx.stroke();
++  };
++
++  const stopDrawing = () => {
++    if (!isDrawing) return;
++    setIsDrawing(false);
++    const canvas = canvasRef.current;
++    if (canvas) {
++      const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
++      onChange(dataUrl);
++    }
++  };
++
++  const handleClear = () => {
++    const canvas = canvasRef.current;
++    if (!canvas) return;
++    const ctx = canvas.getContext("2d");
++    if (!ctx) return;
++    
++    ctx.fillStyle = "#ffffff";
++    ctx.fillRect(0, 0, canvas.width, canvas.height);
++    onChange(null);
++  };
++
++  return (
++    <div className="flex flex-col gap-3 w-full">
++      <div className="flex items-center justify-between">
++        <span className="block text-[13px] font-semibold text-[#787774] ml-1">
++          {t("applicant.signature")} <span className="text-red-400">*</span>
++        </span>
++        {value && (
++          <button
++            type="button"
++            onClick={handleClear}
++            className="text-xs font-semibold text-[#8a6100] hover:text-[#b88400] transition-colors"
++          >
++            {t("applicant.signatureClear")}
++          </button>
++        )}
++      </div>
++      <div className="text-[11.5px] text-[#787774] ml-1 leading-relaxed">
++        {t("applicant.signatureNote")}
++      </div>
++      <div 
++        className="w-full border border-[#d9d7d3] rounded-xl overflow-hidden bg-white shadow-inner relative"
++        style={{ touchAction: "none" }}
++      >
++        <canvas
++          ref={canvasRef}
++          className="w-full block aspect-[2.5/1] cursor-crosshair"
++          onMouseDown={startDrawing}
++          onMouseMove={draw}
++          onMouseUp={stopDrawing}
++          onMouseLeave={stopDrawing}
++          onTouchStart={startDrawing}
++          onTouchMove={draw}
++          onTouchEnd={stopDrawing}
++        />
++      </div>
++    </div>
++  );
+ }
++
+ function DocBox({
+   title,
+   desc

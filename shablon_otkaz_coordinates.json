@@ -1,0 +1,15 @@
+{
+  "full_name": {"page": 1, "x": 134.17, "y": 131.56},
+  "nationality": {"page": 1, "x": 386.67, "y": 131.56},
+  "gender": {"page": 1, "x": 492.50, "y": 133.85},
+  "date_of_birth": {"page": 1, "x": 136.67, "y": 155.31},
+  "phone": {"page": 1, "x": 390.83, "y": 159.06},
+  "passport_number": {"page": 1, "x": 137.92, "y": 184.48},
+  "passport_issue_date": {"page": 1, "x": 307.08, "y": 184.89},
+  "passport_expiry_date": {"page": 1, "x": 463.33, "y": 184.06},
+  "address": {"page": 1, "x": 136.00, "y": 212.00},
+  "date_year": {"page": 1, "x": 169.17, "y": 525.31},
+  "date_month": {"page": 1, "x": 257.92, "y": 525.73},
+  "date_day": {"page": 1, "x": 337.92, "y": 525.73},
+  "applicant_name": {"page": 1, "x": 186.25, "y": 542.81}
+}
