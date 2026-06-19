@@ -181,51 +181,42 @@ bot.on("photo", async (ctx) => {
     const fileId = photo.file_id;
     const fileUrl = await ctx.telegram.getFileLink(fileId);
 
-    // Fetch and process in background
-    ctx.session.expectedTasks++;
+    const processingMsg = await ctx.reply("⌛ Обрабатываю фото...");
 
-    fetch(fileUrl)
-        .then(res => res.arrayBuffer())
-        .then(arrayBuffer => {
-            const buffer = Buffer.from(arrayBuffer);
-            const base64Image = buffer.toString("base64");
-            
-            let prompt = "";
-            let fieldMap = {};
-            
-            if (step === "ask_passport") {
-                prompt = PASSPORT_PROMPT;
-                fieldMap = { surname: "surname", givenNames: "given_names", birthDate: "birth_date", sex: "sex", nationality: "nationality", passportNumber: "passport_number", passportIssueDate: "issue_date", passportExpiryDate: "expiry_date" };
-            } else if (step === "ask_id_front") {
-                prompt = IDCARD_PASSWORD_RECOVERY_PROMPT;
-                fieldMap = { surname: "surname", givenNames: "given_names", idNumber: "registration_number", nationality: "nationality" };
-            } else if (step === "ask_id_back") {
-                prompt = IDCARD_BACK_PASSWORD_RECOVERY_PROMPT;
-                fieldMap = { address: "address" };
-            } else if (step === "ask_contract") {
-                prompt = CONTRACT_ADDRESS_PROMPT;
-                fieldMap = { address: "address" };
-            }
+    try {
+        const res = await fetch(fileUrl);
+        const arrayBuffer = await res.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+        const base64Image = buffer.toString("base64");
+        
+        let prompt = "";
+        let fieldMap = {};
+        
+        if (step === "ask_passport") {
+            prompt = PASSPORT_PROMPT;
+            fieldMap = { surname: "surname", givenNames: "given_names", birthDate: "birth_date", sex: "sex", nationality: "nationality", passportNumber: "passport_number", passportIssueDate: "issue_date", passportExpiryDate: "expiry_date" };
+        } else if (step === "ask_id_front") {
+            prompt = IDCARD_PASSWORD_RECOVERY_PROMPT;
+            fieldMap = { surname: "surname", givenNames: "given_names", idNumber: "registration_number", nationality: "nationality" };
+        } else if (step === "ask_id_back") {
+            prompt = IDCARD_BACK_PASSWORD_RECOVERY_PROMPT;
+            fieldMap = { address: "address" };
+        } else if (step === "ask_contract") {
+            prompt = CONTRACT_ADDRESS_PROMPT;
+            fieldMap = { address: "address" };
+        }
 
-            if (prompt) {
-                callGemini("image/jpeg", base64Image, prompt).then(data => {
-                    // Only update fields if they were successfully extracted
-                    for (const [stateKey, jsonKey] of Object.entries(fieldMap)) {
-                        if (data[jsonKey]) ctx.session.data[stateKey] = data[jsonKey];
-                    }
-                    ctx.session.finishedTasks++;
-                }).catch(err => {
-                    console.error("OCR Error in background:", err);
-                    ctx.session.finishedTasks++;
-                });
-            } else {
-                ctx.session.finishedTasks++;
+        if (prompt) {
+            const data = await callGemini("image/jpeg", base64Image, prompt);
+            for (const [stateKey, jsonKey] of Object.entries(fieldMap)) {
+                if (data[jsonKey]) ctx.session.data[stateKey] = data[jsonKey];
             }
-        })
-        .catch(err => {
-            console.error("Photo download error:", err);
-            ctx.session.finishedTasks++;
-        });
+        }
+    } catch (err) {
+        console.error("OCR Error:", err);
+    }
+
+    try { await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id); } catch (e) {}
 
     // Advance state immediately
     if (step === "ask_passport") {
@@ -269,35 +260,21 @@ bot.on("text", async (ctx) => {
             await ctx.reply("Принято. Напишите ваш логин на HiKorea (если не помните, напишите 'не помню').");
         } else {
             ctx.session.step = "review_data";
-            await checkAndReviewData(ctx);
+            await sendReviewMessage(ctx);
         }
     }
     else if (step === "ask_login") {
         ctx.session.data.login = text;
         ctx.session.step = "review_data";
-        await checkAndReviewData(ctx);
+        await sendReviewMessage(ctx);
     }
     else if (step === "editing_field" && ctx.session.editingField) {
         ctx.session.data[ctx.session.editingField] = text;
         ctx.session.editingField = null;
         ctx.session.step = "review_data";
-        await checkAndReviewData(ctx);
-    }
-});
-
-async function checkAndReviewData(ctx) {
-    if (ctx.session.finishedTasks < ctx.session.expectedTasks) {
-        await ctx.reply("⌛ Обрабатываю ваши фотографии, подождите пару секунд...");
-        const interval = setInterval(async () => {
-            if (ctx.session.finishedTasks >= ctx.session.expectedTasks) {
-                clearInterval(interval);
-                await sendReviewMessage(ctx);
-            }
-        }, 1500);
-    } else {
         await sendReviewMessage(ctx);
     }
-}
+});
 
 async function sendReviewMessage(ctx) {
     const d = ctx.session.data;
