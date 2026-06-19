@@ -120,7 +120,7 @@ const initSession = (ctx) => {
     };
 };
 
-bot.command("start", async (ctx) => {
+const sendStartMenu = async (ctx) => {
     initSession(ctx);
     // Send persistent keyboard first (or together)
     await ctx.reply("Меню обновлено:", Markup.keyboard([
@@ -135,16 +135,10 @@ bot.command("start", async (ctx) => {
             [Markup.button.callback("Другие визы", "VISA_OTHER")]
         ])
     );
-});
+};
 
-bot.hears("🔄 Начать заново", (ctx) => {
-    // Treat as /start
-    ctx.scene ? ctx.scene.leave() : null;
-    bot.handleUpdate({
-        ...ctx.update,
-        message: { ...ctx.message, text: "/start" }
-    });
-});
+bot.command("start", sendStartMenu);
+bot.hears("🔄 Начать заново", sendStartMenu);
 
 bot.action(/VISA_(.+)/, async (ctx) => {
     if (!ctx.session) initSession(ctx);
