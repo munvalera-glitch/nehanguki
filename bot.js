@@ -192,16 +192,16 @@ bot.on("photo", async (ctx) => {
         let prompt = "";
         let fieldMap = {};
         
-        if (step === "ask_passport") {
+        if (step === "ask_passport" || (step === "editing_field" && ["surname", "givenNames", "birthDate", "sex", "nationality", "passportNumber"].includes(ctx.session.editingField))) {
             prompt = PASSPORT_PROMPT;
             fieldMap = { surname: "surname", givenNames: "given_names", birthDate: "birth_date", sex: "sex", nationality: "nationality", passportNumber: "passport_number", passportIssueDate: "issue_date", passportExpiryDate: "expiry_date" };
-        } else if (step === "ask_id_front") {
+        } else if (step === "ask_id_front" || (step === "editing_field" && ctx.session.editingField === "idNumber")) {
             prompt = IDCARD_PASSWORD_RECOVERY_PROMPT;
             fieldMap = { surname: "surname", givenNames: "given_names", idNumber: "registration_number", nationality: "nationality" };
         } else if (step === "ask_id_back") {
             prompt = IDCARD_BACK_PASSWORD_RECOVERY_PROMPT;
             fieldMap = { address: "address" };
-        } else if (step === "ask_contract") {
+        } else if (step === "ask_contract" || (step === "editing_field" && ctx.session.editingField === "address")) {
             prompt = CONTRACT_ADDRESS_PROMPT;
             fieldMap = { address: "address" };
         }
@@ -219,6 +219,13 @@ bot.on("photo", async (ctx) => {
     try { await ctx.telegram.deleteMessage(ctx.chat.id, processingMsg.message_id); } catch (e) {}
 
     // Advance state immediately
+    if (step === "editing_field") {
+        ctx.session.editingField = null;
+        ctx.session.step = "review_data";
+        await sendReviewMessage(ctx);
+        return;
+    }
+
     if (step === "ask_passport") {
         if (ctx.session.data.action === "initial") {
             ctx.session.step = "ask_contract";
@@ -323,7 +330,7 @@ bot.action(/EDIT_(.+)/, async (ctx) => {
         phone: "Номер телефона"
     };
 
-    await ctx.editMessageText(`Введите правильное значение для поля: **${fieldNames[ctx.session.editingField] || ctx.session.editingField}**`);
+    await ctx.editMessageText(`Введите правильное значение для поля: **${fieldNames[ctx.session.editingField] || ctx.session.editingField}**\n\n📸 *Также вы можете отправить новую фотографию документа, и я попытаюсь распознать данные заново!*`, { parse_mode: "Markdown" });
 });
 
 bot.action("RESTART", async (ctx) => {
