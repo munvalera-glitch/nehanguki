@@ -14,6 +14,7 @@ import { Strategy as GoogleStrategy } from "passport-google-oauth20";
 import { v4 as uuidv4 } from "uuid";
 import { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType } from "docx";
 import archiver from "archiver";
+import { bot } from "../bot.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -1342,4 +1343,14 @@ app.listen(PORT, () => {
     console.log(`   POST http://localhost:${PORT}/api/ocr/school-certificate`);
     console.log(`   POST http://localhost:${PORT}/api/generate/application`);
     console.log(`   GET  http://localhost:${PORT}/api/health`);
+    
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+        bot.launch().then(() => console.log("🤖 Telegram bot started.")).catch(err => console.error("Telegram bot error:", err));
+        
+        // Enable graceful stop
+        process.once('SIGINT', () => bot.stop('SIGINT'));
+        process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    }
 });
+
+export { generatePackageFiles };

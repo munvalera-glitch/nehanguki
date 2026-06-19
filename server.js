@@ -18,6 +18,7 @@ import nodemailer from "nodemailer";
 import popbill from "popbill";
 import PizZip from "pizzip";
 import Docxtemplater from "docxtemplater";
+import { bot } from "./bot.js";
 import ExcelJS from "exceljs";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -3443,4 +3444,14 @@ app.listen(PORT, () => {
     console.log(`   POST http://localhost:${PORT}/api/generate/application`);
     console.log(`   POST http://localhost:${PORT}/api/generate/japan-package-download`);
     console.log(`   GET  http://localhost:${PORT}/api/health`);
+    
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+        bot.launch().then(() => console.log("🤖 Telegram bot started.")).catch(err => console.error("Telegram bot error:", err));
+        
+        // Enable graceful stop
+        process.once('SIGINT', () => bot.stop('SIGINT'));
+        process.once('SIGTERM', () => bot.stop('SIGTERM'));
+    }
 });
+
+export { generatePackageFiles };
