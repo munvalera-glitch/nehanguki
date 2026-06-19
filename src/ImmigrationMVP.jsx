@@ -2119,6 +2119,21 @@ export default function ImmigrationMVP() {
             </Card>}
 
             {step === "applicant" && <Card title={t("str_25")} subtitle={t("str_54")}>
+              {/* Dynamic Action Message */}
+              <div className="mb-6 p-4 rounded-xl bg-[#eef2ff] border border-[#c7d5fb] text-[#4f7cff] flex items-start gap-3 shadow-sm animate-in fade-in">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 mt-0.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+                <div>
+                  <div className="font-bold text-[15px] mb-1">
+                    Выбранное действие: {action === "address_change" ? getSimpleActionLabel("address_change", t) : t(`action.${action}`)}
+                  </div>
+                  <div className="text-[14px] leading-relaxed">
+                    {action === "password_recovery" 
+                      ? 'Пожалуйста, загрузите лицевую и оборотную сторону вашей ID-карты (ARC) и заполните данные ниже.'
+                      : 'Пожалуйста, загрузите разворот паспорта и лицевую сторону вашей ID-карты (ARC).'
+                    }
+                  </div>
+                </div>
+              </div>
               <div 
                 onClick={() => {
                   document.getElementById('upload-section')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
