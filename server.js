@@ -3446,7 +3446,10 @@ app.listen(PORT, () => {
     console.log(`   GET  http://localhost:${PORT}/api/health`);
     
     if (process.env.TELEGRAM_BOT_TOKEN) {
-        bot.launch().then(() => console.log("🤖 Telegram bot started.")).catch(err => console.error("Telegram bot error:", err));
+        bot.launch().then(() => {
+            console.log("🤖 Telegram bot started.");
+            bot.telegram.setMyCommands([{ command: "start", description: "Начать заново" }]);
+        }).catch(err => console.error("Telegram bot error:", err));
         
         // Enable graceful stop
         process.once('SIGINT', () => bot.stop('SIGINT'));
