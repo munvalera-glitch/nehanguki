@@ -120,9 +120,14 @@ const initSession = (ctx) => {
     };
 };
 
-bot.command("start", (ctx) => {
+bot.command("start", async (ctx) => {
     initSession(ctx);
-    ctx.reply(
+    // Send persistent keyboard first (or together)
+    await ctx.reply("Меню обновлено:", Markup.keyboard([
+        ["🔄 Начать заново"]
+    ]).resize());
+
+    await ctx.reply(
         "👋 Здравствуйте! Добро пожаловать в бот оформления документов.\nПожалуйста, выберите ваш тип визы:",
         Markup.inlineKeyboard([
             [Markup.button.callback("F-4", "VISA_F4")],
@@ -130,6 +135,15 @@ bot.command("start", (ctx) => {
             [Markup.button.callback("Другие визы", "VISA_OTHER")]
         ])
     );
+});
+
+bot.hears("🔄 Начать заново", (ctx) => {
+    // Treat as /start
+    ctx.scene ? ctx.scene.leave() : null;
+    bot.handleUpdate({
+        ...ctx.update,
+        message: { ...ctx.message, text: "/start" }
+    });
 });
 
 bot.action(/VISA_(.+)/, async (ctx) => {
