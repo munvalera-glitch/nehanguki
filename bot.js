@@ -89,7 +89,9 @@ You are a passport data extraction assistant for a Guarantor (신원보증인). 
 JSON schema:
 {
   "full_name": "string",
-  "nationality": "string"
+  "nationality": "string",
+  "passport_number": "string",
+  "sex": "string"
 }
 `.trim();
 
@@ -121,18 +123,17 @@ function calculateAge(birthDate) {
     if (!birthDate) return 0;
     const parts = birthDate.split('-');
     if (parts.length !== 3) return 0;
+    const today = new Date();
     const dob = new Date(parts[0], parts[1] - 1, parts[2]);
-    const diff = Date.now() - dob.getTime();
-    return Math.floor(diff / (1000 * 60 * 60 * 24 * 365.25));
+    let a = today.getFullYear() - dob.getFullYear();
+    const m = today.getMonth() - dob.getMonth();
+    if (m < 0 || (m === 0 && today.getDate() < dob.getDate())) a--;
+    return a;
 }
 
 function getSequence(d) {
     let sequence = ["visa", "action"];
     if (!d.visaType || !d.action) return sequence;
-
-    if (d.action === "initial" || d.action === "address_change" || d.action === "extension") {
-        sequence.push("housing");
-    }
 
     if (d.action !== "password_recovery") sequence.push("ask_passport");
     sequence.push("ask_id_front");
@@ -141,6 +142,8 @@ function getSequence(d) {
         sequence.push("ask_id_back");
     }
 
+    sequence.push("ask_phone");
+
     sequence.push("ask_student");
     if (d.isStudent === true) {
         sequence.push("ask_school_cert");
@@ -148,6 +151,14 @@ function getSequence(d) {
 
     if (d.visaType === "VISA_F1" && d.action !== "address_change" && d.action !== "reissue") {
         sequence.push("ask_guarantor_passport");
+        sequence.push("ask_guarantor_phone");
+        sequence.push("ask_guarantor_rel");
+    }
+
+    if (d.action === "initial" || d.action === "address_change" || d.action === "extension") {
+        sequence.push("housing");
+        sequence.push("ask_acc_residence_type");
+        sequence.push("ask_acc_ownership_type");
     }
 
     if (d.action !== "password_recovery") {
@@ -160,6 +171,7 @@ function getSequence(d) {
 
     if (d.action !== "password_recovery" && d.housingType === "other") {
         sequence.push("ask_provider_rel");
+        sequence.push("ask_provider_phone");
     }
 
     const isStudent = d.isStudent === true;
@@ -168,7 +180,6 @@ function getSequence(d) {
         sequence.push("ask_occupation");
     }
 
-    sequence.push("ask_phone");
     if (d.action === "password_recovery") {
         sequence.push("ask_login");
     }
@@ -186,15 +197,20 @@ function getNextUncompletedStep(ctx) {
         if (step === "visa" && !d.visaType) return "visa";
         if (step === "action" && !d.action) return "action";
         if (step === "housing" && !d.housingType) return "housing";
+        if (step === "ask_acc_residence_type" && !d.acc_residence_type) return "ask_acc_residence_type";
+        if (step === "ask_acc_ownership_type" && !d.acc_ownership_type) return "ask_acc_ownership_type";
         if (step === "ask_passport" && !d.passportNumber) return "ask_passport";
         if (step === "ask_id_front" && !d.idNumber) return "ask_id_front";
         if (step === "ask_id_back" && !d.address) return "ask_id_back";
         if (step === "ask_student" && d.isStudent === null) return "ask_student";
         if (step === "ask_school_cert" && !d.schoolName) return "ask_school_cert";
         if (step === "ask_guarantor_passport" && !d.guarantorFullName) return "ask_guarantor_passport";
+        if (step === "ask_guarantor_phone" && !d.guarantorPhone) return "ask_guarantor_phone";
+        if (step === "ask_guarantor_rel" && !d.guarantorRelationship) return "ask_guarantor_rel";
         if (step === "ask_contract" && !d.address) return "ask_contract";
         if (step === "ask_provider_id" && !d.providerIdNumber) return "ask_provider_id";
         if (step === "ask_provider_rel" && !d.providerRel) return "ask_provider_rel";
+        if (step === "ask_provider_phone" && !d.providerPhone) return "ask_provider_phone";
         if (step === "ask_occupation" && !d.occupationType) return "ask_occupation";
         if (step === "ask_phone" && !d.phone) return "ask_phone";
         if (step === "ask_login" && !d.login) return "ask_login";
@@ -231,6 +247,19 @@ async function navigateToNextStep(ctx) {
             [Markup.button.callback("Да, на мое имя", "HOUSING_OWN")],
             [Markup.button.callback("Нет, на другое имя", "HOUSING_OTHER")]
         ]));
+    } else if (nextStep === "ask_acc_residence_type") {
+        await ctx.reply("Выберите тип жилья:", Markup.inlineKeyboard([
+            [Markup.button.callback("Частный дом / Квартира", "RESIDENCE_private_residence")],
+            [Markup.button.callback("Общежитие", "RESIDENCE_dormitory")],
+            [Markup.button.callback("Гостиница / Мотель", "RESIDENCE_accommodation")],
+            [Markup.button.callback("Другое", "RESIDENCE_other")]
+        ]));
+    } else if (nextStep === "ask_acc_ownership_type") {
+        await ctx.reply("Кому принадлежит жилье?", Markup.inlineKeyboard([
+            [Markup.button.callback("Собственность (모가)", "OWNERSHIP_own")],
+            [Markup.button.callback("В аренде (임대)", "OWNERSHIP_rent")],
+            [Markup.button.callback("Другое (기타)", "OWNERSHIP_other")]
+        ]));
     } else if (nextStep === "ask_passport") {
         await ctx.reply("Пожалуйста, загрузите фотографию разворота вашего паспорта.");
     } else if (nextStep === "ask_id_front") {
@@ -246,6 +275,13 @@ async function navigateToNextStep(ctx) {
         await ctx.reply("Пожалуйста, загрузите фото справки со школы (School Certificate).");
     } else if (nextStep === "ask_guarantor_passport") {
         await ctx.reply("Пожалуйста, загрузите фото разворота паспорта поручителя (Guarantor).");
+    } else if (nextStep === "ask_guarantor_phone") {
+        await ctx.reply("Введите номер телефона поручителя (например, 010-1234-5678):");
+    } else if (nextStep === "ask_guarantor_rel") {
+        await ctx.reply("Кем вам приходится поручитель?", Markup.inlineKeyboard([
+            [Markup.button.callback("Супруг/Супруга", "g_rel_spouse")],
+            [Markup.button.callback("Родитель", "g_rel_parent")]
+        ]));
     } else if (nextStep === "ask_contract") {
         await ctx.reply("Пожалуйста, загрузите фотографию договора аренды жилья (Contract) для подтверждения адреса.");
     } else if (nextStep === "ask_provider_id") {
@@ -256,6 +292,8 @@ async function navigateToNextStep(ctx) {
             [Markup.button.callback("Работодатель", "REL_employer")],
             [Markup.button.callback("Другое", "REL_other")]
         ]));
+    } else if (nextStep === "ask_provider_phone") {
+        await ctx.reply("Пожалуйста, напишите номер телефона предоставителя жилья (представителя):", Markup.removeKeyboard());
     } else if (nextStep === "ask_occupation") {
         await ctx.reply("Сведения о занятости (Выберите ваш статус):", Markup.inlineKeyboard([
             [Markup.button.callback("Временно не работаю", "JOB_unemployed")],
@@ -264,7 +302,7 @@ async function navigateToNextStep(ctx) {
             [Markup.button.callback("Офис / документы", "JOB_office"), Markup.button.callback("Свой бизнес", "JOB_business")]
         ]));
     } else if (nextStep === "ask_phone") {
-        await ctx.reply("Пожалуйста, напишите ваш номер телефона.");
+        await ctx.reply("Пожалуйста, напишите ваш личный номер телефона (заявителя):", Markup.removeKeyboard());
     } else if (nextStep === "ask_login") {
         await ctx.reply("Напишите ваш логин на HiKorea (если не помните, напишите 'не помню').");
     } else if (nextStep === "review_data") {
@@ -283,6 +321,8 @@ const initSession = (ctx) => {
             visaType: "",
             action: "",
             housingType: "",
+            acc_residence_type: "",
+            acc_ownership_type: "",
             isStudent: null,
             surname: "",
             givenNames: "",
@@ -297,10 +337,15 @@ const initSession = (ctx) => {
             schoolName: "",
             guarantorFullName: "",
             guarantorNationality: "",
+            guarantorSex: "",
+            guarantorPassportNumber: "",
+            guarantorPhone: "",
+            guarantorRelationship: "",
             providerFullName: "",
             providerIdNumber: "",
             providerNationality: "",
             providerRel: "",
+            providerPhone: "",
             occupationType: "",
             phone: "",
             login: "",
@@ -356,9 +401,38 @@ bot.action(/REL_(.+)/, async (ctx) => {
     await navigateToNextStep(ctx);
 });
 
+bot.action(/g_rel_(.+)/, async (ctx) => {
+    if (!ctx.session) return;
+    const relStr = ctx.match[1];
+    const d = ctx.session.data;
+    if (relStr === "spouse") d.guarantorRelationship = "배우자";
+    else if (relStr === "parent") {
+        const sx = (d.guarantorSex || "").toLowerCase();
+        d.guarantorRelationship = (sx === "m" || sx === "male" || sx === "мужской" || sx === "мужчина") ? "부" : "모";
+    }
+    else d.guarantorRelationship = "지인";
+    
+    await ctx.answerCbQuery();
+    await navigateToNextStep(ctx);
+});
+
 bot.action(/JOB_(.+)/, async (ctx) => {
     if (!ctx.session) return;
     ctx.session.data.occupationType = ctx.match[1];
+    await ctx.answerCbQuery();
+    await navigateToNextStep(ctx);
+});
+
+bot.action(/RESIDENCE_(.+)/, async (ctx) => {
+    if (!ctx.session) return;
+    ctx.session.data.acc_residence_type = ctx.match[1];
+    await ctx.answerCbQuery();
+    await navigateToNextStep(ctx);
+});
+
+bot.action(/OWNERSHIP_(.+)/, async (ctx) => {
+    if (!ctx.session) return;
+    ctx.session.data.acc_ownership_type = ctx.match[1];
     await ctx.answerCbQuery();
     await navigateToNextStep(ctx);
 });
@@ -398,7 +472,7 @@ bot.on("photo", async (ctx) => {
             fieldMap = { schoolName: "school_name" };
         } else if (step === "ask_guarantor_passport" || (step === "editing_field" && ctx.session.editingField === "guarantorFullName")) {
             prompt = GUARANTOR_PASSPORT_PROMPT;
-            fieldMap = { guarantorFullName: "full_name", guarantorNationality: "nationality" };
+            fieldMap = { guarantorFullName: "full_name", guarantorNationality: "nationality", guarantorPassportNumber: "passport_number", guarantorSex: "sex" };
         } else if (step === "ask_provider_id" || (step === "editing_field" && ctx.session.editingField === "providerIdNumber")) {
             prompt = PROVIDER_IDCARD_PROMPT;
             fieldMap = { providerFullName: "full_name", providerIdNumber: "registration_number", providerNationality: "nationality" };
@@ -433,6 +507,12 @@ bot.on("text", async (ctx) => {
     if (step === "ask_phone") {
         ctx.session.data.phone = text;
         await navigateToNextStep(ctx);
+    } else if (step === "ask_provider_phone") {
+        ctx.session.data.providerPhone = text;
+        await navigateToNextStep(ctx);
+    } else if (step === "ask_guarantor_phone") {
+        ctx.session.data.guarantorPhone = text;
+        await navigateToNextStep(ctx);
     } else if (step === "ask_login") {
         ctx.session.data.login = text;
         await navigateToNextStep(ctx);
@@ -461,15 +541,28 @@ async function sendReviewMessage(ctx) {
 
     if (d.login) info += `• Логин HiKorea: ${d.login || "Не найдено"}\n`;
     if (d.isStudent) info += `• Школа: ${d.schoolName || "Не найдено"}\n`;
-    if (d.guarantorFullName) info += `• Поручитель: ${d.guarantorFullName} (${d.guarantorNationality})\n`;
+    if (d.guarantorFullName) {
+        info += `• Поручитель: ${d.guarantorFullName} (${d.guarantorNationality}, ${d.guarantorSex || "?"})\n`;
+        info += `• Отношение поручителя: ${d.guarantorRelationship || "?"}\n`;
+        info += `• Телефон поручителя: ${d.guarantorPhone || "?"}\n`;
+    }
     if (d.providerIdNumber) info += `• Предоставитель жилья: ID ${d.providerIdNumber} (${d.providerFullName})\n`;
     if (d.providerRel) {
         const relMap = { family_relative: "Семья/Родственник", employer: "Работодатель", other: "Другое" };
         info += `• Отношение предоставителя: ${relMap[d.providerRel] || d.providerRel}\n`;
     }
+    if (d.providerPhone) info += `• Телефон предоставителя: ${d.providerPhone}\n`;
     if (d.occupationType) {
         const jobMap = { unemployed: "Временно не работаю", production: "Производство", warehouse: "Склад", construction: "Стройка", retail: "Магазин", office: "Офис", business: "Бизнес" };
         info += `• Занятость: ${jobMap[d.occupationType] || d.occupationType}\n`;
+    }
+    if (d.acc_residence_type) {
+        const resMap = { private_residence: "Частный дом / Квартира", dormitory: "Общежитие", accommodation: "Гостиница / Мотель", other: "Другое" };
+        info += `• Тип жилья: ${resMap[d.acc_residence_type] || d.acc_residence_type}\n`;
+    }
+    if (d.acc_ownership_type) {
+        const ownMap = { own: "Собственность (모가)", rent: "В аренде (임대)", other: "Другое (기타)" };
+        info += `• Принадлежность жилья: ${ownMap[d.acc_ownership_type] || d.acc_ownership_type}\n`;
     }
 
     info += "\nЕсли вы заметили ошибку распознавания, нажмите на кнопку ниже для исправления.";
@@ -480,10 +573,23 @@ async function sendReviewMessage(ctx) {
         [Markup.button.callback("✏️ Изменить Номер ID", "EDIT_idNumber"), Markup.button.callback("✏️ Изменить Пол", "EDIT_sex")],
         [Markup.button.callback("✏️ Изменить Адрес", "EDIT_address"), Markup.button.callback("✏️ Изменить Гражданство", "EDIT_nationality")],
         [Markup.button.callback("✏️ Изменить Телефон", "EDIT_phone")],
+        [Markup.button.callback("✏️ Изм. Тип жилья", "EDIT_REASK_acc_residence_type"), Markup.button.callback("✏️ Изм. Принадлежность", "EDIT_REASK_acc_ownership_type")],
         [Markup.button.callback("✅ Все верно! Сгенерировать PDF", "GENERATE_PDF")],
         [Markup.button.callback("🔄 Начать заново", "RESTART")]
     ]));
 }
+
+bot.action("EDIT_REASK_acc_residence_type", async (ctx) => {
+    ctx.session.data.acc_residence_type = "";
+    ctx.session.step = "ask_acc_residence_type";
+    await navigateToNextStep(ctx);
+});
+
+bot.action("EDIT_REASK_acc_ownership_type", async (ctx) => {
+    ctx.session.data.acc_ownership_type = "";
+    ctx.session.step = "ask_acc_ownership_type";
+    await navigateToNextStep(ctx);
+});
 
 bot.action(/EDIT_(.+)/, async (ctx) => {
     if (!ctx.session) return;
@@ -535,10 +641,17 @@ bot.action("GENERATE_PDF", async (ctx) => {
         schoolName: d.schoolName !== "none" ? d.schoolName : "",
         guarantorFullName: d.guarantorFullName,
         guarantorNationality: d.guarantorNationality,
+        guarantorSex: d.guarantorSex,
+        guarantorPassportNumber: d.guarantorPassportNumber,
+        guarantorPhone: d.guarantorPhone,
+        guarantorRelationship: d.guarantorRelationship,
         providerFullName: d.providerFullName,
         providerIdNumber: d.providerIdNumber,
         providerNationality: d.providerNationality,
+        providerPhone: d.providerPhone,
         accRelationship: d.providerRel,
+        accOwnershipType: d.acc_ownership_type,
+        accResidenceType: d.acc_residence_type,
         occupationType: d.occupationType,
     };
 
@@ -561,6 +674,11 @@ bot.action("GENERATE_PDF", async (ctx) => {
         console.error("PDF Gen error:", e);
         await ctx.reply("❌ Произошла ошибка при генерации PDF. Пожалуйста, попробуйте еще раз.");
     }
+});
+
+bot.catch((err, ctx) => {
+    console.error(`Ooops, encountered an error for ${ctx.updateType}`, err);
+    ctx.reply("❌ Произошла ошибка при обработке вашего запроса. Пожалуйста, попробуйте еще раз.").catch(() => {});
 });
 
 export { bot };
