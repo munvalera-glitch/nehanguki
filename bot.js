@@ -1,4 +1,5 @@
 import "dotenv/config";
+import popbill from "popbill";
 import { Telegraf, session, Markup } from "telegraf";
 import { GoogleGenAI } from "@google/genai";
 import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, unlinkSync } from "fs";
@@ -9,6 +10,13 @@ import { generatePackageFiles } from "./server.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+popbill.config({
+    LinkID: process.env.POPBILL_LINK_ID,
+    SecretKey: process.env.POPBILL_SECRET_KEY,
+    IsTest: false,
+    defaultErrorHandler: function(Error) { console.error('Popbill Error', Error); }
+});
+const faxService = popbill.FaxService();
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 if (!TELEGRAM_BOT_TOKEN) {
     console.warn("⚠️ TELEGRAM_BOT_TOKEN is not set in .env. Bot will not start.");
@@ -144,9 +152,11 @@ function getSequence(d) {
 
     sequence.push("ask_phone");
 
-    sequence.push("ask_student");
-    if (d.isStudent === true) {
-        sequence.push("ask_school_cert");
+    if (d.action === "extension") {
+        sequence.push("ask_student");
+        if (d.isStudent === true) {
+            sequence.push("ask_school_cert");
+        }
     }
 
     if (d.visaType === "VISA_F1" && d.action !== "address_change" && d.action !== "reissue") {
@@ -157,8 +167,10 @@ function getSequence(d) {
 
     if (d.action === "initial" || d.action === "address_change" || d.action === "extension") {
         sequence.push("housing");
-        sequence.push("ask_acc_residence_type");
-        sequence.push("ask_acc_ownership_type");
+        if (d.housingType === "other") {
+            sequence.push("ask_acc_residence_type");
+            sequence.push("ask_acc_ownership_type");
+        }
     }
 
     if (d.action !== "password_recovery") {
@@ -261,7 +273,15 @@ async function navigateToNextStep(ctx) {
             [Markup.button.callback("Другое (기타)", "OWNERSHIP_other")]
         ]));
     } else if (nextStep === "ask_passport") {
-        await ctx.reply("Пожалуйста, загрузите фотографию разворота вашего паспорта.");
+        const actionMap = {
+            "password_recovery": "Восстановление пароля HiKorea",
+            "address_change": "Смена адреса",
+            "initial": "Первичное получение ID",
+            "extension": "Продление визы",
+            "reissue": "Перевыпуск ID"
+        };
+        const actionStr = actionMap[ctx.session.data.action] || ctx.session.data.action;
+        await ctx.reply(`Вы выбрали: *${actionStr}*\nПожалуйста, загрузите фотографию разворота вашего паспорта.`, { parse_mode: 'Markdown' });
     } else if (nextStep === "ask_id_front") {
         await ctx.reply("Пожалуйста, загрузите фотографию лицевой стороны вашей ID-карты.");
     } else if (nextStep === "ask_id_back") {
@@ -293,7 +313,7 @@ async function navigateToNextStep(ctx) {
             [Markup.button.callback("Другое", "REL_other")]
         ]));
     } else if (nextStep === "ask_provider_phone") {
-        await ctx.reply("Пожалуйста, напишите номер телефона предоставителя жилья (представителя):", Markup.removeKeyboard());
+        await ctx.reply("Пожалуйста, напишите номер телефона предоставителя жилья (представителя):", Markup.keyboard([["🔄 Начать заново"]]).resize());
     } else if (nextStep === "ask_occupation") {
         await ctx.reply("Сведения о занятости (Выберите ваш статус):", Markup.inlineKeyboard([
             [Markup.button.callback("Временно не работаю", "JOB_unemployed")],
@@ -302,7 +322,7 @@ async function navigateToNextStep(ctx) {
             [Markup.button.callback("Офис / документы", "JOB_office"), Markup.button.callback("Свой бизнес", "JOB_business")]
         ]));
     } else if (nextStep === "ask_phone") {
-        await ctx.reply("Пожалуйста, напишите ваш личный номер телефона (заявителя):", Markup.removeKeyboard());
+        await ctx.reply("Пожалуйста, напишите ваш личный номер телефона (заявителя):", Markup.keyboard([["🔄 Начать заново"]]).resize());
     } else if (nextStep === "ask_login") {
         await ctx.reply("Напишите ваш логин на HiKorea (если не помните, напишите 'не помню').");
     } else if (nextStep === "review_data") {
@@ -312,6 +332,124 @@ async function navigateToNextStep(ctx) {
 
 const bot = new Telegraf(TELEGRAM_BOT_TOKEN);
 bot.use(session());
+
+const ADMIN_CHAT_ID = "166094870";
+const ALLOWED_USERS_FILE = join(__dirname, "data", "allowed_users.json");
+
+function getAllowedUsers() {
+    try {
+        if (!existsSync(ALLOWED_USERS_FILE)) return [];
+        return JSON.parse(readFileSync(ALLOWED_USERS_FILE, "utf8"));
+    } catch (e) {
+        return [];
+    }
+}
+
+function addAllowedUser(userId) {
+    const users = getAllowedUsers();
+    if (!users.includes(userId)) {
+        users.push(userId);
+        writeFileSync(ALLOWED_USERS_FILE, JSON.stringify(users, null, 2), "utf8");
+    }
+}
+
+function removeAllowedUser(userId) {
+    const users = getAllowedUsers();
+    const updated = users.filter(id => id !== userId);
+    writeFileSync(ALLOWED_USERS_FILE, JSON.stringify(updated, null, 2), "utf8");
+}
+
+bot.use(async (ctx, next) => {
+    if (!ctx.from) return next();
+    
+    const userId = ctx.from.id;
+    if (userId.toString() === ADMIN_CHAT_ID) return next();
+
+    const allowed = getAllowedUsers();
+    if (allowed.includes(userId)) return next();
+
+    if (ctx.callbackQuery && ctx.callbackQuery.data === "REQUEST_ACCESS") {
+        await ctx.answerCbQuery();
+        await ctx.editMessageText("⏳ Ваш запрос отправлен администратору. Пожалуйста, ожидайте...");
+        
+        const username = ctx.from.username ? `@${ctx.from.username}` : "Без username";
+        const name = `${ctx.from.first_name || ""} ${ctx.from.last_name || ""}`.trim();
+        
+        await ctx.telegram.sendMessage(ADMIN_CHAT_ID, 
+            `🔐 **Новый запрос доступа!**\n\nИмя: ${name}\nUsername: ${username}\nID: ${userId}`, 
+            {
+                parse_mode: "Markdown",
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: "✅ Разрешить", callback_data: `APPROVE_${userId}` },
+                            { text: "❌ Отклонить", callback_data: `REJECT_${userId}` }
+                        ]
+                    ]
+                }
+            }
+        );
+        return;
+    }
+
+    if (ctx.callbackQuery) {
+        await ctx.answerCbQuery("Доступ закрыт.", { show_alert: true });
+        return;
+    }
+
+    await ctx.reply(
+        "⛔️ У вас нет доступа к этому боту.\n\nПожалуйста, запросите доступ у администратора, нажав на кнопку ниже:",
+        Markup.inlineKeyboard([
+            [Markup.button.callback("🔑 Запросить доступ", "REQUEST_ACCESS")]
+        ])
+    );
+});
+
+bot.action(/APPROVE_(.+)/, async (ctx) => {
+    const userId = parseInt(ctx.match[1], 10);
+    addAllowedUser(userId);
+    await ctx.editMessageText(ctx.callbackQuery.message.text + "\n\n✅ **ОДОБРЕНО**");
+    try {
+        await ctx.telegram.sendMessage(userId, "🎉 **Доступ разрешен!**\n\nТеперь вы можете пользоваться ботом. Отправьте /start для начала работы.", { parse_mode: "Markdown" });
+    } catch (e) {}
+});
+
+bot.action(/REJECT_(.+)/, async (ctx) => {
+    const userId = parseInt(ctx.match[1], 10);
+    await ctx.editMessageText(ctx.callbackQuery.message.text + "\n\n❌ **ОТКЛОНЕНО**");
+    try {
+        await ctx.telegram.sendMessage(userId, "⛔️ **В доступе отказано.**", { parse_mode: "Markdown" });
+    } catch (e) {}
+});
+
+bot.command('admin', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
+    
+    const users = getAllowedUsers();
+    if (users.length === 0) {
+        return ctx.reply("Список допущенных пользователей пуст.");
+    }
+    
+    let text = "👥 **Список допущенных пользователей:**\n\n";
+    users.forEach((id, index) => {
+        text += `${index + 1}. ID: \`${id}\`\n`;
+    });
+    text += "\nЧтобы удалить пользователя, отправьте команду:\n`/revoke 123456789`";
+    
+    await ctx.reply(text, { parse_mode: "Markdown" });
+});
+
+bot.command('revoke', async (ctx) => {
+    if (ctx.from.id.toString() !== ADMIN_CHAT_ID) return;
+    
+    const parts = ctx.message.text.split(' ');
+    if (parts.length < 2) {
+        return ctx.reply("❌ Укажите ID пользователя. Пример: `/revoke 123456789`", { parse_mode: "Markdown" });
+    }
+    const userId = parseInt(parts[1], 10);
+    removeAllowedUser(userId);
+    await ctx.reply(`✅ Пользователь ${userId} удален из списка доступа.`);
+});
 
 const initSession = (ctx) => {
     ctx.session = {
@@ -356,11 +494,13 @@ const initSession = (ctx) => {
 
 const sendStartMenu = async (ctx) => {
     initSession(ctx);
-    await ctx.reply("Меню обновлено:", Markup.keyboard([["🔄 Начать заново"]]).resize());
+    await ctx.reply("Меню обновлено", Markup.keyboard([["🔄 Начать заново"]]).resize());
     await navigateToNextStep(ctx);
 };
 
 bot.command("start", sendStartMenu);
+bot.command("reset", sendStartMenu);
+bot.command("restart", sendStartMenu);
 bot.hears("🔄 Начать заново", sendStartMenu);
 
 bot.action(/VISA_(.+)/, async (ctx) => {
@@ -437,11 +577,26 @@ bot.action(/OWNERSHIP_(.+)/, async (ctx) => {
     await navigateToNextStep(ctx);
 });
 
-bot.on("photo", async (ctx) => {
+bot.on(["photo", "document"], async (ctx) => {
     if (!ctx.session || !ctx.session.step) return;
     const step = ctx.session.step;
-    const photo = ctx.message.photo[ctx.message.photo.length - 1];
-    const fileId = photo.file_id;
+    
+    let fileId;
+    let mimeType;
+    if (ctx.message.photo) {
+        const photo = ctx.message.photo[ctx.message.photo.length - 1];
+        fileId = photo.file_id;
+        mimeType = "image/jpeg";
+    } else if (ctx.message.document) {
+        fileId = ctx.message.document.file_id;
+        mimeType = ctx.message.document.mime_type || "image/jpeg";
+        if (!mimeType.startsWith("image/")) {
+            return ctx.reply("❌ Пожалуйста, отправьте изображение (в формате JPG или PNG). PDF и другие документы пока не поддерживаются.");
+        }
+    } else {
+        return;
+    }
+
     const fileUrl = await ctx.telegram.getFileLink(fileId);
 
     const processingMsg = await ctx.reply("⌛ Обрабатываю фото...");
@@ -479,7 +634,7 @@ bot.on("photo", async (ctx) => {
         }
 
         if (prompt) {
-            const data = await callGemini("image/jpeg", base64Image, prompt);
+            const data = await callGemini(mimeType, base64Image, prompt);
             for (const [stateKey, jsonKey] of Object.entries(fieldMap)) {
                 if (data[jsonKey]) ctx.session.data[stateKey] = data[jsonKey];
             }
@@ -574,8 +729,7 @@ async function sendReviewMessage(ctx) {
         [Markup.button.callback("✏️ Изменить Адрес", "EDIT_address"), Markup.button.callback("✏️ Изменить Гражданство", "EDIT_nationality")],
         [Markup.button.callback("✏️ Изменить Телефон", "EDIT_phone")],
         [Markup.button.callback("✏️ Изм. Тип жилья", "EDIT_REASK_acc_residence_type"), Markup.button.callback("✏️ Изм. Принадлежность", "EDIT_REASK_acc_ownership_type")],
-        [Markup.button.callback("✅ Все верно! Сгенерировать PDF", "GENERATE_PDF")],
-        [Markup.button.callback("🔄 Начать заново", "RESTART")]
+        [Markup.button.callback("🟩 СГЕНЕРИРОВАТЬ PDF 🟩", "GENERATE_PDF")]
     ]));
 }
 
@@ -662,16 +816,69 @@ bot.action("GENERATE_PDF", async (ctx) => {
         const pdfBuffer = readFileSync(finalPath);
         
         await ctx.replyWithDocument({ source: pdfBuffer, filename: "HiKorea_Application.pdf" }, {
-            caption: "✅ Ваши документы готовы! Вы можете скачать PDF файл."
+            caption: "✅ Ваше заявление успешно сгенерировано!"
         });
+        
+        const cleanupFiles = () => {
+            try {
+                outputFiles.forEach(f => { try { unlinkSync(f); } catch {} });
+                unlinkSync(finalPath);
+            } catch {}
+        };
 
-        try {
-            outputFiles.forEach(f => { try { unlinkSync(f); } catch {} });
-            unlinkSync(finalPath);
-        } catch {}
+        if (d.action === "password_recovery") {
+            const senderName = (d.surname || "") + " " + (d.givenNames || "");
+            const CorpNum = process.env.POPBILL_CORP_NUM;
+            const SenderNum = process.env.POPBILL_SENDER_NUM;
+            const ReceiverNum = "050-4466-4550";
+            const ReceiverName = "HiKorea Help Desk";
+            const FilePath = [finalPath];
 
-    } catch (e) {
-        console.error("PDF Gen error:", e);
+            const options = {
+                SenderNum: SenderNum,
+                SenderName: senderName.trim() || "Applicant",
+                Receiver: ReceiverNum,
+                ReceiverName: ReceiverName,
+                FilePaths: FilePath,
+            };
+
+            await ctx.reply("📠 Отправляю факс в HiKorea...");
+
+            faxService.sendFax(CorpNum, options, function(receiptNum) {
+                console.log("✅ Fax sent successfully. ReceiptNum : " + receiptNum);
+                ctx.reply(`✅ Факс отправлен!\nНомер квитанции: ${receiptNum}\nОжидайте подтверждения доставки...`);
+                
+                const pollInterval = setInterval(() => {
+                    faxService.getFaxResult(CorpNum, receiptNum, function(result) {
+                        if (!result || result.length === 0) return;
+                        const faxInfo = result[0];
+                        const state = faxInfo.state;
+                        
+                        if (state === 3) {
+                            clearInterval(pollInterval);
+                            ctx.reply(`✅ Доставлено!\nВаш факс (квитанция ${receiptNum}) был успешно доставлен в HiKorea.`);
+                        } else if (state === 4) {
+                            clearInterval(pollInterval);
+                            const errMsg = faxInfo.result ? `Код ошибки: ${faxInfo.result}` : "Не удалось дозвониться";
+                            ctx.reply(`❌ Ошибка доставки факса (квитанция ${receiptNum}).\nПричина: ${errMsg}`);
+                        }
+                    }, function(err) {
+                        console.error("Popbill getFaxResult Error:", err.message);
+                    });
+                }, 10000);
+                
+                cleanupFiles();
+            }, function(error) {
+                console.error("❌ Popbill Error : [" + error.code + "] " + error.message);
+                ctx.reply("❌ Произошла ошибка при отправке факса: " + error.message);
+                cleanupFiles();
+            });
+        } else {
+            cleanupFiles();
+        }
+
+    } catch (err) {
+        console.error("PDF Gen error:", err);
         await ctx.reply("❌ Произошла ошибка при генерации PDF. Пожалуйста, попробуйте еще раз.");
     }
 });
@@ -684,5 +891,10 @@ bot.catch((err, ctx) => {
 export { bot };
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+    bot.telegram.setMyCommands([
+        { command: 'start', description: 'Запуск бота' },
+        { command: 'reset', description: 'Сбросить заявление и начать заново' }
+    ]).catch(console.error);
+    
     bot.launch().then(() => console.log("Bot is running..."));
 }

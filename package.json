@@ -28,7 +28,7 @@
     "passport-google-oauth20": "^2.0.0",
     "passport-local": "^1.0.0",
     "pizzip": "^3.2.0",
-    "popbill": "^1.64.0",
+    "popbill": "^1.64.2",
     "puppeteer": "^25.1.0",
     "react": "latest",
     "react-dom": "latest",
